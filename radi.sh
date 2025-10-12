@@ -40,13 +40,16 @@ _EOT_
 show_all_stations() {
   # Radiru
   echo "Record type: nhk"
-  list=$(curl --silent "https://www.nhk.or.jp/radio/config/config_v5.8.0_radiru_and.xml")
-  cnt=$(echo "${list}" | xmllint --xpath "count(/radiru_config/area)" - 2> /dev/null)
+  list=$(curl --silent "https://www.nhk.or.jp/radio/config/config_web.xml")
+  cnt=$(echo "${list}" | xmllint --xpath "count(/radiru_config/stream_url/data)" - 2> /dev/null)
   for i in $(awk "BEGIN { for (i = 1; i <= ${cnt}; i++) { print i } }"); do
-    echo "  $(echo "${list}" | xmllint --xpath "concat(string((/radiru_config/area)[${i}]/@id), '-r1: ', string((/radiru_config/area)[${i}]/@name), ' R1')" - 2> /dev/null)"
-    echo "  $(echo "${list}" | xmllint --xpath "concat(string((/radiru_config/area)[${i}]/@id), '-fm: ', string((/radiru_config/area)[${i}]/@name), ' FM')" - 2> /dev/null)"
+    area_nm=$(echo "${list}" | xmllint --xpath "concat(/radiru_config/stream_url/data[${i}]/area/text(), ':', /radiru_config/stream_url/data[${i}]/areajp/text())" - 2> /dev/null)
+    area=$(echo "${area_nm}" | cut -d ':' -f1)
+    area_jp=$(echo "${area_nm}" | cut -d ':' -f2)
+    echo "  ${area}-r1: ${area_jp} R1"
+    echo "  ${area}-r2: ${area_jp} R2"
+    echo "  ${area}-fm: ${area_jp} FM"
   done
-  echo "  r2: R2"
   echo ""
 
   # radiko
@@ -189,15 +192,11 @@ radiko_authorize() {
 get_hls_uri_nhk() {
   station_id=$1
 
-  if [ "${station_id}" = "r2" ]; then
-    # R2
-    curl --silent "https://www.nhk.or.jp/radio/config/config_v5.8.0_radiru_and.xml" | xmllint --xpath "string(/radiru_config/config[@key='url_stream_r2']/value[1]/@text)" - 2> /dev/null
-  else
-    # Split area and channel
-    area="$(echo "${station_id}" | cut -d '-' -f 1)"
-    channel="$(echo "${station_id}" | cut -d '-' -f 2)"
-    curl --silent "https://www.nhk.or.jp/radio/config/config_v5.8.0_radiru_and.xml" | xmllint --xpath "string(/radiru_config/area[@id='${area}']/config[@key='url_stream_${channel}']/value[1]/@text)" - 2> /dev/null
-  fi
+  # Split area and channel
+  area="$(echo "${station_id}" | cut -d '-' -f 1)"
+  channel="$(echo "${station_id}" | cut -d '-' -f 2)"
+  curl --silent "https://www.nhk.or.jp/radio/config/config_web.xml" | xmllint --xpath "string(/radiru_config/stream_url/data[area='${area}']/${channel}hls/text())" - 2> /dev/null
+#  curl --silent "https://www.nhk.or.jp/radio/config/config_web.xml" | xmllint --xpath "string(/radiru_config/area[@id='${area}']/config[@key='url_stream_${channel}']/value[1]/@text)" - 2> /dev/null
 }
 
 #######################################
@@ -440,6 +439,7 @@ else
   ffmpeg \
       -loglevel error \
       -fflags +discardcorrupt \
+      -http_persistent 0 \
       -i "${playlist_uri}" \
       -acodec copy \
       -vn \
