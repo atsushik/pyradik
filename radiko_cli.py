@@ -74,7 +74,6 @@ def ensure_tables_exist():
 
 def load_enabled_stations(filepath):
     if not Path(filepath).exists():
-        console.print(f"[red]❌ 局リストファイルが存在しません: {filepath}[/red]")
         return set()
     with open(filepath, "r", encoding="utf-8") as f:
         return {line.strip() for line in f if line.strip()}
@@ -221,27 +220,35 @@ def cli():
 
 @cli.command("show-now")
 def show_now():
-    """現在放送中の番組を [cyan]enabled_stations.txt[/cyan] に従って表示"""
+    """現在放送中の番組を [cyan]enabled_stations.txt[/cyan] に従って表示（なければ全局）"""
     ensure_tables_exist()
     now = datetime.now()
     now_date = now.strftime("%Y%m%d")
     now_minutes = now.hour * 60 + now.minute
 
     enabled = load_enabled_stations(ENABLED_STATIONS_PATH)
-    if not enabled:
-        console.print("[yellow]⚠ 有効な放送局が定義されていません[/yellow]")
-        return
+    use_all = not enabled
+    if use_all:
+        console.print("[blue]ℹ️ enabled_stations.txt がないため全局を表示します（auto-enable で絞り込めます）[/blue]")
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    placeholders = ",".join(["?"] * len(enabled))
 
-    cur.execute(f"""
-    SELECT p.station_id, COALESCE(s.name, p.station_id), p.ftime, p.duration, p.title, p.pfm, p.url
-    FROM programs p
-    LEFT JOIN stations s ON p.station_id = s.station_id
-    WHERE p.date = ? AND p.station_id IN ({placeholders})
-    """, (now_date, *enabled))
+    if use_all:
+        cur.execute("""
+        SELECT p.station_id, COALESCE(s.name, p.station_id), p.ftime, p.duration, p.title, p.pfm, p.url
+        FROM programs p
+        LEFT JOIN stations s ON p.station_id = s.station_id
+        WHERE p.date = ?
+        """, (now_date,))
+    else:
+        placeholders = ",".join(["?"] * len(enabled))
+        cur.execute(f"""
+        SELECT p.station_id, COALESCE(s.name, p.station_id), p.ftime, p.duration, p.title, p.pfm, p.url
+        FROM programs p
+        LEFT JOIN stations s ON p.station_id = s.station_id
+        WHERE p.date = ? AND p.station_id IN ({placeholders})
+        """, (now_date, *enabled))
 
     rows = []
     for row in cur.fetchall():
@@ -263,7 +270,8 @@ def show_now():
         console.print("[blue]📭 現在放送中の番組はありません[/blue]")
         return
 
-    table = Table(title="📡 現在放送中の番組 (enabled_stations.txt 限定)")
+    title = "📡 現在放送中の番組（全局）" if use_all else "📡 現在放送中の番組 (enabled_stations.txt 限定)"
+    table = Table(title=title)
     table.add_column("放送局ID", style="cyan")
     table.add_column("放送局", style="cyan")
     table.add_column("開始", style="green")
