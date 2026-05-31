@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>radiko</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0d0d1a;
+  --surface: #16162a;
+  --surface2: #1e1e38;
+  --border: #2a2a4a;
+  --accent: #7c6af7;
+  --accent2: #e94560;
+  --text: #e0e0f0;
+  --muted: #6b6b9a;
+  --station-w: 110px;
+  --row-h: 52px;
+  --hour-w: 130px;
+}
+body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; font-size: 13px; overflow: hidden; height: 100dvh; display: flex; flex-direction: column; }
+
+/* ── Header ── */
+#header { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap; }
+#header h1 { font-size: 16px; font-weight: 700; color: var(--accent); letter-spacing: 1px; }
+.date-nav { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.date-nav button { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
+.date-nav button:hover { background: var(--accent); }
+#date-label { font-size: 14px; font-weight: 600; min-width: 90px; text-align: center; }
+#now-playing-bar { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+#now-playing-bar.active { color: #4ade80; }
+#now-playing-bar .dot { width: 7px; height: 7px; border-radius: 50%; background: #4ade80; animation: pulse 1.5s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+.btn { border: none; border-radius: 6px; padding: 5px 12px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.btn-stop { background: var(--accent2); color: #fff; }
+.btn-stop:hover { opacity: .85; }
+
+/* ── Tabs ── */
+#tabs { display: flex; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.tab { background: none; border: none; color: var(--muted); padding: 8px 18px; cursor: pointer; font-size: 13px; font-weight: 600; border-bottom: 2px solid transparent; }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab:hover:not(.active) { color: var(--text); }
+
+/* ── Tab content ── */
+.tab-panel { display: none; flex: 1; overflow: hidden; }
+.tab-panel.active { display: flex; }
+
+/* ── Timetable layout ── */
+#panel-timetable { position: relative; }
+
+/* 左カラム（放送局名）＋右スクロールエリアの 2 カラム構成 */
+#timetable-outer { display: flex; flex: 1; overflow: hidden; }
+
+#tt-left {
+  width: var(--station-w); flex-shrink: 0;
+  display: flex; flex-direction: column;
+  background: var(--surface); border-right: 1px solid var(--border);
+  z-index: 20;
+}
+#tt-corner {
+  height: 28px; flex-shrink: 0;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+#tt-station-names { flex: 1; overflow: hidden; }
+.tt-station-name {
+  height: var(--row-h);
+  display: flex; flex-direction: column; justify-content: center; padding: 0 8px;
+  border-bottom: 1px solid var(--border); cursor: pointer;
+}
+.tt-station-name:hover { background: var(--surface2); }
+.tt-station-id { font-size: 11px; font-weight: 700; color: var(--accent); }
+.tt-station-fullname { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 右エリア：時間ヘッダー（sticky top）＋番組ブロック */
+#tt-right { flex: 1; overflow: auto; position: relative; }
+#tt-time-header {
+  position: sticky; top: 0; z-index: 30;
+  display: flex; height: 28px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.tt-hour {
+  min-width: var(--hour-w); width: var(--hour-w); border-right: 1px solid var(--border);
+  display: flex; align-items: center; padding-left: 6px; color: var(--muted); font-size: 11px; font-weight: 600;
+  flex-shrink: 0;
+}
+
+/* 番組行 */
+#tt-body { position: relative; }
+.tt-station-row { position: relative; height: var(--row-h); border-bottom: 1px solid var(--border); }
+.tt-programs { position: relative; height: var(--row-h); }
+.tt-prog {
+  position: absolute; top: 3px; bottom: 3px;
+  border-radius: 5px; overflow: hidden; cursor: pointer;
+  display: flex; align-items: center; padding: 0 6px;
+  border: 1px solid transparent;
+  transition: filter .15s, border-color .15s;
+  font-size: 11px; font-weight: 600;
+}
+.tt-prog:hover { filter: brightness(1.25); border-color: #fff4; }
+.tt-prog.selected { border-color: #fff8 !important; filter: brightness(1.3); }
+.tt-prog-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tt-prog-pfm { font-size: 10px; font-weight: 400; opacity: .75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+
+/* Grid lines */
+.tt-hour-line {
+  position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); pointer-events: none;
+}
+
+/* Now indicator */
+#now-line {
+  position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent2); pointer-events: none; z-index: 15;
+  display: none;
+}
+#now-line::before {
+  content: ''; position: absolute; top: 0; left: -4px;
+  border: 5px solid transparent; border-top: 6px solid var(--accent2);
+}
+
+/* ── Detail panel ── */
+#detail-panel {
+  width: 320px; min-width: 320px; background: var(--surface); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow-y: auto;
+  transition: width .2s, min-width .2s;
+}
+#detail-panel.collapsed { width: 0; min-width: 0; overflow: hidden; border: none; }
+#detail-header { padding: 12px 14px 8px; border-bottom: 1px solid var(--border); }
+#detail-close { float: right; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; padding: 0 2px; }
+#detail-close:hover { color: var(--text); }
+#detail-station { font-size: 11px; color: var(--accent); font-weight: 700; margin-bottom: 4px; }
+#detail-title { font-size: 15px; font-weight: 700; line-height: 1.4; margin-bottom: 4px; }
+#detail-meta { font-size: 11px; color: var(--muted); }
+#detail-body { padding: 10px 14px; flex: 1; }
+#detail-pfm { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+#detail-info { font-size: 12px; line-height: 1.6; color: #bbb; white-space: pre-wrap; word-break: break-all; }
+#detail-url { font-size: 11px; color: var(--accent); word-break: break-all; display: block; margin-top: 6px; }
+#detail-actions { padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); }
+.btn-record { background: var(--accent); color: #fff; }
+.btn-record:hover { opacity: .85; }
+.btn-play { background: #22c55e; color: #fff; }
+.btn-play:hover:not(:disabled) { opacity: .85; }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+#detail-status { font-size: 11px; color: #4ade80; min-height: 16px; text-align: center; }
+.detail-opt { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.detail-opt label { cursor: pointer; }
+.detail-opt input[type=checkbox] { accent-color: var(--accent); }
+
+/* ── Recordings panel ── */
+#panel-recordings { flex-direction: column; overflow-y: auto; padding: 16px; }
+.rec-item { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+.rec-name { flex: 1; font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-size { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.btn-dl { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 4px 10px; cursor: pointer; font-size: 11px; }
+.btn-dl:hover { background: var(--accent); border-color: var(--accent); }
+.btn-del { background: none; border: none; color: var(--accent2); cursor: pointer; font-size: 16px; padding: 0 4px; }
+.btn-del:hover { opacity: .7; }
+
+/* ── Schedules panel ── */
+#panel-schedules { flex-direction: column; overflow-y: auto; padding: 16px; }
+.sched-item { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+.sched-info { flex: 1; }
+.sched-time { font-size: 12px; font-weight: 700; color: var(--accent); }
+.sched-station { font-size: 12px; }
+.sched-out { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn-cancel { background: none; border: 1px solid var(--accent2); color: var(--accent2); border-radius: 5px; padding: 4px 10px; cursor: pointer; font-size: 11px; }
+.btn-cancel:hover { background: var(--accent2); color: #fff; }
+.empty-msg { color: var(--muted); font-size: 13px; text-align: center; padding: 40px; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1>📻 radiko</h1>
+  <div class="date-nav">
+    <button id="prev-day">◀</button>
+    <span id="date-label">--</span>
+    <button id="next-day">▶</button>
+    <button id="today-btn" class="btn" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);">今日</button>
+  </div>
+  <div id="now-playing-bar">
+    <span class="dot" style="display:none" id="np-dot"></span>
+    <span id="np-text">--</span>
+  </div>
+  <button class="btn btn-stop" id="stop-btn">■ 停止</button>
+</div>
+
+<div id="tabs">
+  <button class="tab active" data-tab="timetable">番組表</button>
+  <button class="tab" data-tab="recordings">録音ファイル</button>
+  <button class="tab" data-tab="schedules">録音予約一覧</button>
+</div>
+
+<!-- Timetable -->
+<div class="tab-panel active" id="panel-timetable">
+  <div id="timetable-outer">
+    <div id="tt-left">
+      <div id="tt-corner"></div>
+      <div id="tt-station-names"></div>
+    </div>
+    <div id="tt-right">
+      <div id="tt-time-header"></div>
+      <div id="tt-body"></div>
+    </div>
+  </div>
+  <div id="detail-panel" class="collapsed">
+    <div id="detail-header">
+      <button id="detail-close">✕</button>
+      <div id="detail-station"></div>
+      <div id="detail-title"></div>
+      <div id="detail-meta"></div>
+    </div>
+    <div id="detail-body">
+      <div id="detail-pfm"></div>
+      <div id="detail-info"></div>
+      <a id="detail-url" target="_blank" rel="noopener"></a>
+    </div>
+    <div id="detail-actions">
+      <div id="detail-status"></div>
+      <div class="detail-opt">
+        <input type="checkbox" id="opt-art" checked>
+        <label for="opt-art">カバーアートを埋め込む</label>
+      </div>
+      <button class="btn btn-record" id="btn-record">録音</button>
+      <button class="btn btn-play" id="btn-play-live">ライブ再生</button>
+    </div>
+  </div>
+</div>
+
+<!-- Recordings -->
+<div class="tab-panel" id="panel-recordings">
+  <div id="recordings-list"></div>
+</div>
+
+<!-- Schedules -->
+<div class="tab-panel" id="panel-schedules">
+  <div id="schedules-list"></div>
+</div>
+
+<script>
+const HOUR_W = 130; // px per hour
+const TOTAL_HOURS = 24;
+const TOTAL_W = HOUR_W * TOTAL_HOURS;
+
+let state = { dates: [], dateIdx: 0, programs: [], stations: [], selectedProg: null };
+
+// ── Utilities ──
+
+function fmtSize(b) {
+  if (b > 1024*1024) return (b/1024/1024).toFixed(1) + ' MB';
+  return (b/1024).toFixed(0) + ' KB';
+}
+
+function fmtDate(d) {
+  return `${d.slice(0,4)}/${d.slice(4,6)}/${d.slice(6,8)}`;
+}
+
+function ftimeToMinutes(ftime) {
+  return parseInt(ftime.slice(0,2)) * 60 + parseInt(ftime.slice(2,4));
+}
+
+function stationColor(station_id) {
+  let h = 0;
+  for (const c of station_id) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
+  const hue = (h % 360);
+  return `hsl(${hue},55%,32%)`;
+}
+
+function post(url, body) {
+  return fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+}
+
+// ── Tabs ──
+
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.tab;
+    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + tab));
+    if (tab === 'recordings') loadRecordings();
+    if (tab === 'schedules') loadSchedules();
+  });
+});
+
+// ── Date navigation ──
+
+async function init() {
+  const res = await fetch('/api/dates');
+  const data = await res.json();
+  state.dates = data.dates;
+
+  // default to today or nearest date
+  const today = new Date();
+  const todayStr = today.getFullYear().toString()
+    + String(today.getMonth()+1).padStart(2,'0')
+    + String(today.getDate()).padStart(2,'0');
+  state.dateIdx = state.dates.findIndex(d => d <= todayStr);
+  if (state.dateIdx < 0) state.dateIdx = 0;
+
+  await loadDate();
+  updateNowPlaying();
+  setInterval(updateNowPlaying, 30000);
+  setInterval(updateNowLine, 60000);
+}
+
+async function loadDate() {
+  const date = state.dates[state.dateIdx];
+  document.getElementById('date-label').textContent = fmtDate(date);
+  document.getElementById('prev-day').disabled = state.dateIdx >= state.dates.length - 1;
+  document.getElementById('next-day').disabled = state.dateIdx <= 0;
+
+  const [progRes, stRes] = await Promise.all([
+    fetch(`/api/programs?date=${date}`),
+    fetch('/api/stations'),
+  ]);
+  const progData = await progRes.json();
+  const stData = await stRes.json();
+  state.programs = progData.programs;
+  state.stations = stData.stations;
+
+  renderTimetable();
+}
+
+document.getElementById('prev-day').addEventListener('click', () => {
+  if (state.dateIdx < state.dates.length - 1) { state.dateIdx++; loadDate(); }
+});
+document.getElementById('next-day').addEventListener('click', () => {
+  if (state.dateIdx > 0) { state.dateIdx--; loadDate(); }
+});
+document.getElementById('today-btn').addEventListener('click', () => {
+  const today = new Date();
+  const todayStr = today.getFullYear().toString()
+    + String(today.getMonth()+1).padStart(2,'0')
+    + String(today.getDate()).padStart(2,'0');
+  state.dateIdx = state.dates.findIndex(d => d <= todayStr);
+  if (state.dateIdx < 0) state.dateIdx = 0;
+  loadDate();
+});
+
+// ── Timetable rendering ──
+
+function renderTimetable() {
+  renderTimeHeader();
+  renderRows();
+  updateNowLine();
+  // 縦スクロールを左カラムと同期
+  const right = document.getElementById('tt-right');
+  right.onscroll = () => {
+    document.getElementById('tt-station-names').scrollTop = right.scrollTop;
+  };
+}
+
+function renderTimeHeader() {
+  const el = document.getElementById('tt-time-header');
+  el.style.width = TOTAL_W + 'px';
+  el.innerHTML = '';
+  for (let h = 0; h < TOTAL_HOURS; h++) {
+    const cell = document.createElement('div');
+    cell.className = 'tt-hour';
+    cell.textContent = String(h).padStart(2,'0') + ':00';
+    el.appendChild(cell);
+  }
+}
+
+function renderRows() {
+  const namesCol = document.getElementById('tt-station-names');
+  const body = document.getElementById('tt-body');
+  namesCol.innerHTML = '';
+  body.innerHTML = '';
+
+  const byStation = {};
+  for (const p of state.programs) {
+    (byStation[p.station_id] = byStation[p.station_id] || []).push(p);
+  }
+
+  for (const st of state.stations) {
+    // 放送局名セル（左カラム）
+    const nameEl = document.createElement('div');
+    nameEl.className = 'tt-station-name';
+    nameEl.innerHTML = `<span class="tt-station-id">${esc(st.station_id)}</span><span class="tt-station-fullname">${esc(st.name)}</span>`;
+    nameEl.addEventListener('click', () => {
+      post('/api/play', { station_id: st.station_id }).then(() => updateNowPlaying());
+    });
+    namesCol.appendChild(nameEl);
+
+    // 番組ブロック行（右エリア）
+    const row = document.createElement('div');
+    row.className = 'tt-station-row';
+    row.style.width = TOTAL_W + 'px';
+
+    for (let h = 0; h < TOTAL_HOURS; h++) {
+      const line = document.createElement('div');
+      line.className = 'tt-hour-line';
+      line.style.left = (h * HOUR_W) + 'px';
+      row.appendChild(line);
+    }
+
+    for (const p of byStation[st.station_id] || []) {
+      const startMin = ftimeToMinutes(p.ftime);
+      const left = (startMin / 60) * HOUR_W;
+      const width = Math.max(2, (p.duration / 60) * HOUR_W) - 2;
+      const block = document.createElement('div');
+      block.className = 'tt-prog';
+      block.dataset.progId = p.prog_id;
+      block.style.left = left + 'px';
+      block.style.width = width + 'px';
+      block.style.background = stationColor(p.station_id);
+      block.innerHTML = `<span><span class="tt-prog-title">${esc(p.title)}</span>${p.pfm ? `<span class="tt-prog-pfm">${esc(p.pfm)}</span>` : ''}</span>`;
+      block.addEventListener('click', () => selectProgram(p));
+      row.appendChild(block);
+    }
+
+    body.appendChild(row);
+  }
+
+  // Now line
+  const nowLine = document.createElement('div');
+  nowLine.id = 'now-line';
+  body.appendChild(nowLine);
+}
+
+function updateNowLine() {
+  const date = state.dates[state.dateIdx];
+  const today = new Date();
+  const todayStr = today.getFullYear().toString()
+    + String(today.getMonth()+1).padStart(2,'0')
+    + String(today.getDate()).padStart(2,'0');
+
+  const line = document.getElementById('now-line');
+  if (!line) return;
+
+  if (date !== todayStr) { line.style.display = 'none'; return; }
+
+  const nowMin = today.getHours() * 60 + today.getMinutes();
+  line.style.left = (nowMin / 60) * HOUR_W + 'px';
+  line.style.top = '0';
+  line.style.display = 'block';
+}
+
+function esc(str) {
+  return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Program detail ──
+
+function selectProgram(p) {
+  // Deselect previous
+  document.querySelectorAll('.tt-prog.selected').forEach(el => el.classList.remove('selected'));
+  document.querySelector(`.tt-prog[data-prog-id="${p.prog_id}"]`)?.classList.add('selected');
+
+  state.selectedProg = p;
+
+  const date = p.date || state.dates[state.dateIdx];
+  const startH = p.ftime.slice(0,2) + ':' + p.ftime.slice(2,4);
+  const endMin = ftimeToMinutes(p.ftime) + p.duration;
+  const endH = String(Math.floor(endMin/60) % 24).padStart(2,'0') + ':' + String(endMin%60).padStart(2,'0');
+  const now = new Date();
+  const progStart = new Date(`${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6,8)}T${startH}:00`);
+  const progEnd = new Date(progStart.getTime() + p.duration * 60000);
+
+  let recordLabel = '録音';
+  if (progEnd < now) recordLabel = 'タイムフリー録音';
+  else if (progStart > now) recordLabel = 'スケジュール登録';
+  else recordLabel = '今すぐ録音';
+
+  document.getElementById('detail-station').textContent = `${p.station_id}  ${p.station_name}`;
+  document.getElementById('detail-title').textContent = p.title;
+  document.getElementById('detail-meta').textContent = `${fmtDate(date)}  ${startH}〜${endH}  (${p.duration}分)`;
+  document.getElementById('detail-pfm').textContent = p.pfm ? `👤 ${p.pfm}` : '';
+  document.getElementById('detail-info').textContent = p.info || '';
+  const urlEl = document.getElementById('detail-url');
+  if (p.url) { urlEl.href = p.url; urlEl.textContent = p.url; }
+  else { urlEl.href = ''; urlEl.textContent = ''; }
+  const isAiring = progStart <= now && now < progEnd;
+  document.getElementById('btn-record').textContent = recordLabel;
+  document.getElementById('btn-play-live').disabled = !isAiring;
+  document.getElementById('detail-status').textContent = '';
+  document.getElementById('detail-panel').classList.remove('collapsed');
+}
+
+document.getElementById('detail-close').addEventListener('click', () => {
+  document.getElementById('detail-panel').classList.add('collapsed');
+  document.querySelectorAll('.tt-prog.selected').forEach(el => el.classList.remove('selected'));
+  state.selectedProg = null;
+});
+
+document.getElementById('btn-record').addEventListener('click', async () => {
+  if (!state.selectedProg) return;
+  const p = state.selectedProg;
+  const withArt = document.getElementById('opt-art').checked;
+
+  const date = p.date || state.dates[state.dateIdx];
+  const now = new Date();
+  const progStart = new Date(`${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6,8)}T${p.ftime.slice(0,2)}:${p.ftime.slice(2,4)}:00`);
+
+  const body = { prog_id: p.prog_id, with_art: withArt, do_register: progStart > now };
+  const statusEl = document.getElementById('detail-status');
+  statusEl.textContent = '...';
+  try {
+    const res = await post('/api/record', body);
+    const data = await res.json();
+    if (data.status === 'started') statusEl.textContent = '✅ 録音開始';
+    else if (data.status === 'scheduled') statusEl.textContent = `✅ スケジュール登録: ${data.scheduled?.slice(0,16) || ''}`;
+    else statusEl.textContent = JSON.stringify(data);
+  } catch(e) { statusEl.textContent = '❌ エラー'; }
+});
+
+document.getElementById('btn-play-live').addEventListener('click', () => {
+  if (!state.selectedProg) return;
+  post('/api/play', { station_id: state.selectedProg.station_id }).then(() => updateNowPlaying());
+});
+
+// ── Now playing ──
+
+async function updateNowPlaying() {
+  const res = await fetch('/api/now-playing');
+  const data = await res.json();
+  const bar = document.getElementById('now-playing-bar');
+  const dot = document.getElementById('np-dot');
+  const txt = document.getElementById('np-text');
+  if (data.playing) {
+    bar.classList.add('active');
+    dot.style.display = 'block';
+    txt.textContent = `▶ ${data.station_id}`;
+  } else {
+    bar.classList.remove('active');
+    dot.style.display = 'none';
+    txt.textContent = '-- 停止中 --';
+  }
+}
+
+document.getElementById('stop-btn').addEventListener('click', async () => {
+  await post('/api/stop', {});
+  updateNowPlaying();
+});
+
+// ── Recordings ──
+
+async function loadRecordings() {
+  const res = await fetch('/api/recordings');
+  const data = await res.json();
+  const list = document.getElementById('recordings-list');
+  if (!data.recordings.length) {
+    list.innerHTML = '<div class="empty-msg">録音ファイルがありません</div>';
+    return;
+  }
+  list.innerHTML = data.recordings.map(r => `
+    <div class="rec-item" data-filename="${esc(r.filename)}">
+      <span class="rec-name" title="${esc(r.filename)}">${esc(r.filename)}</span>
+      <span class="rec-size">${fmtSize(r.size)}</span>
+      <button class="btn-dl" onclick="window.location='/api/recordings/${encodeURIComponent(r.filename)}'">⬇</button>
+      <button class="btn-del" data-filename="${esc(r.filename)}" title="削除">🗑</button>
+    </div>
+  `).join('');
+
+  list.querySelectorAll('.btn-del').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm(`削除しますか？\n${btn.dataset.filename}`)) return;
+      await fetch(`/api/recordings/${encodeURIComponent(btn.dataset.filename)}`, { method: 'DELETE' });
+      loadRecordings();
+    });
+  });
+}
+
+// ── Schedules ──
+
+async function loadSchedules() {
+  const res = await fetch('/api/schedules');
+  const data = await res.json();
+  const list = document.getElementById('schedules-list');
+  if (data.error) { list.innerHTML = `<div class="empty-msg">⚠ ${esc(data.error)}</div>`; return; }
+  if (!data.schedules.length) { list.innerHTML = '<div class="empty-msg">スケジュールはありません</div>'; return; }
+  list.innerHTML = data.schedules.map(s => `
+    <div class="sched-item">
+      <div class="sched-info">
+        <div class="sched-time">${esc(s.scheduled)}</div>
+        <div class="sched-station">${esc(s.station_id)} — ${esc(s.duration)}分</div>
+        <div class="sched-out">${esc(s.output)}</div>
+      </div>
+      <button class="btn-cancel" data-jobid="${esc(s.job_id)}">取り消し</button>
+    </div>
+  `).join('');
+  list.querySelectorAll('.btn-cancel').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm(`ジョブ ${btn.dataset.jobid} を取り消しますか？`)) return;
+      await fetch(`/api/schedules/${encodeURIComponent(btn.dataset.jobid)}`, { method: 'DELETE' });
+      loadSchedules();
+    });
+  });
+}
+
+// ── Scroll to current time on load ──
+
+function scrollToNow() {
+  const date = state.dates[state.dateIdx];
+  const today = new Date();
+  const todayStr = today.getFullYear().toString()
+    + String(today.getMonth()+1).padStart(2,'0')
+    + String(today.getDate()).padStart(2,'0');
+  if (date !== todayStr) return;
+  const nowMin = today.getHours() * 60 + today.getMinutes();
+  const right = document.getElementById('tt-right');
+  right.scrollLeft = Math.max(0, (nowMin / 60) * HOUR_W - right.clientWidth / 2);
+}
+
+init().then(scrollToNow);
+</script>
+</body>
+</html>

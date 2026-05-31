@@ -38,6 +38,22 @@ sudo apt install curl libxml2-utils jq ffmpeg
 sudo apt install python3-rich python3-rich-click
 ```
 
+### web_ui/web_ui.py（Web UI）
+- Python 3
+- fastapi
+- uvicorn
+
+```
+pip install --break-system-packages fastapi uvicorn
+```
+
+起動:
+
+```
+python web_ui/web_ui.py
+# → http://localhost:8080
+```
+
 `schedule-record` / `list-schedules` / `cancel-schedule` コマンドを使う場合は `at` も必要です。
 
 ```
