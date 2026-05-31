@@ -178,35 +178,33 @@ def detect_enabled_stations_parallel():
         return layout
 
     with Live(render_layout(), console=console, refresh_per_second=4) as live:
-        with progress:
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                futures = {}
-                station_iter = iter(station_list)
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {}
+            station_iter = iter(station_list)
 
-                def submit_next():
-                    nonlocal current_checking_text
-                    try:
-                        sid, name = next(station_iter)
-                        f = executor.submit(test_station, sid)
-                        futures[f] = (sid, name)
-                        current_checking_text = f"{sid} - {name}"
-                        live.update(render_layout())
-                    except StopIteration:
-                        pass
-
-                # 最初に MAX_WORKERS 件まで submit
-                for _ in range(MAX_WORKERS):
-                    submit_next()
-
-                while futures:
-                    done, _ = wait(futures, return_when=FIRST_COMPLETED)
-                    for f in done:
-                        sid, name = futures.pop(f)
-                        if f.result():
-                            enabled.append(sid)
-                        progress.advance(task)
-                        submit_next()
+            def submit_next():
+                nonlocal current_checking_text
+                try:
+                    sid, name = next(station_iter)
+                    f = executor.submit(test_station, sid)
+                    futures[f] = (sid, name)
+                    current_checking_text = f"{sid} - {name}"
                     live.update(render_layout())
+                except StopIteration:
+                    pass
+
+            for _ in range(MAX_WORKERS):
+                submit_next()
+
+            while futures:
+                done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                for f in done:
+                    sid, name = futures.pop(f)
+                    if f.result():
+                        enabled.append(sid)
+                    progress.advance(task)
+                    submit_next()
+                live.update(render_layout())
 
     with open(ENABLED_STATIONS_PATH, "w", encoding="utf-8") as f:
         for sid in enabled:
