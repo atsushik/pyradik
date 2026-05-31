@@ -38,6 +38,13 @@ sudo apt install curl libxml2-utils jq ffmpeg
 sudo apt install python3-rich python3-rich-click
 ```
 
+`schedule-record` / `list-schedules` / `cancel-schedule` コマンドを使う場合は `at` も必要です。
+
+```
+sudo apt install at
+sudo systemctl enable --now atd
+```
+
 
 ## 使い方
 

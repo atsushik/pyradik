@@ -1,7 +1,12 @@
+import math
+import os
+import re
+import tempfile
 import rich_click as click
 import sqlite3
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
+from urllib import request as urllib_request
 from rich.console import Console
 from rich.table import Table
 from pathlib import Path
@@ -21,6 +26,94 @@ ENABLED_STATIONS_PATH = "enabled_stations.txt"
 RX2_PATH = "/home/atsushi/git/radish/rx2"
 
 MAX_WORKERS = 3
+RADISH_PATH = str(Path(__file__).parent / "radish-play.sh")
+
+def parse_offset(s):
+    """'1m', '90s', '2m30s' → total seconds as int"""
+    s = s.strip()
+    if not s or s in ("0", "0s", "0m"):
+        return 0
+    total = sum(
+        int(v) * 60 if u == 'm' else int(v)
+        for v, u in re.findall(r'(\d+)([ms])', s)
+    )
+    if not total:
+        try:
+            total = int(s)
+        except ValueError:
+            pass
+    return total
+
+def fmt_duration(total_secs):
+    h, rem = divmod(total_secs, 3600)
+    m, s = divmod(rem, 60)
+    parts = []
+    if h: parts.append(f"{h}時間")
+    if m: parts.append(f"{m}分")
+    if s: parts.append(f"{s}秒")
+    return "".join(parts) or "0秒"
+
+def get_program_info_at_time(station_id, date, ftime):
+    """DB から station_id + date + ftime に一致する (url, title) を返す"""
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT url, title FROM programs WHERE station_id = ? AND date = ? AND ftime = ? LIMIT 1",
+        (station_id, date, ftime),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def fetch_og_image(url):
+    """URL の og:image を取得して (image_bytes, ext) を返す。失敗時は None"""
+    try:
+        req = urllib_request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib_request.urlopen(req, timeout=10) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    # property と content の順序どちらにも対応
+    m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html)
+    if not m:
+        m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html)
+    if not m:
+        return None
+    img_url = m.group(1)
+    ext = img_url.rsplit(".", 1)[-1].split("?")[0].lower()
+    if ext not in ("jpg", "jpeg", "png", "webp"):
+        ext = "jpg"
+    try:
+        req2 = urllib_request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib_request.urlopen(req2, timeout=10) as resp:
+            return resp.read(), ext
+    except Exception:
+        return None
+
+def embed_cover_art(audio_path, image_bytes, ext):
+    """m4a ファイルにカバーアートを埋め込む（上書き）。成功時 True"""
+    with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
+        tmp.write(image_bytes)
+        tmp_path = tmp.name
+    out_path = audio_path + ".arttmp.m4a"
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-i", audio_path, "-i", tmp_path,
+                "-map", "0:a", "-map", "1",
+                "-c", "copy", "-disposition:v:0", "attached_pic",
+                "-y", out_path,
+            ],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            os.replace(out_path, audio_path)
+            return True
+        if os.path.exists(out_path):
+            os.unlink(out_path)
+        return False
+    finally:
+        os.unlink(tmp_path)
 
 click.rich_click.USE_RICH_MARKUP = True
 click.rich_click.USE_MARKDOWN = True
@@ -112,6 +205,7 @@ def test_station(station_id, timeout=6):
     try:
         proc = subprocess.Popen(
             ["bash", "/home/atsushi/git/radish/radish-play.sh", "-t", "radiko", "-s", station_id, "-m", "record", "-d", "60", "-o", "tmp"],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE
         )
@@ -528,7 +622,7 @@ def search_program(keyword):
     like = f"%{keyword}%"
 
     cur.execute("""
-    SELECT p.date, p.ftime, COALESCE(s.name, p.station_id), p.title, p.pfm, p.url
+    SELECT p.date, p.ftime, p.station_id, COALESCE(s.name, p.station_id), p.duration, p.title, p.pfm, p.url
     FROM programs p
     LEFT JOIN stations s ON p.station_id = s.station_id
     WHERE p.title LIKE ? OR p.pfm LIKE ? OR p.info LIKE ?
@@ -545,22 +639,205 @@ def search_program(keyword):
     table = Table(title=f"🔍 キーワード検索結果: '{keyword}'", show_lines=False)
     table.add_column("日付", style="green")
     table.add_column("開始", style="cyan")
+    table.add_column("局ID", style="dim")
     table.add_column("局名", style="bold")
+    table.add_column("分", style="cyan", justify="right")
     table.add_column("番組名", style="magenta")
     table.add_column("パーソナリティ", style="dim")
     table.add_column("URL", style="blue", overflow="fold")
 
-    for date, ftime, name, title, pfm, url in results:
+    for date, ftime, station_id, name, duration, title, pfm, url in results:
         table.add_row(
             f"{date[:4]}/{date[4:6]}/{date[6:]}",
             f"{ftime[:2]}:{ftime[2:]}",
+            station_id,
             name,
+            str(duration),
             title,
             pfm,
             url or "-"
         )
 
     console.print(table)
+
+@cli.command("list-schedules")
+def list_schedules():
+    """atコマンドに登録済みの録音スケジュール一覧を表示"""
+    try:
+        atq = subprocess.run(["atq"], capture_output=True, text=True)
+    except FileNotFoundError:
+        console.print("[red]❌ at コマンドが見つかりません（sudo apt install at）[/red]")
+        return
+
+    jobs = []
+    for line in atq.stdout.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        job_id = parts[0]
+        detail = subprocess.run(["at", "-c", job_id], capture_output=True, text=True)
+        cmd_lines = [l for l in detail.stdout.splitlines() if "radish-play.sh" in l]
+        if not cmd_lines:
+            continue
+        cmd = cmd_lines[0].strip()
+
+        # atq の日時フィールド: "123  Mon Jun  1 08:01:00 2026 a user"
+        # → parts[1:6] が "Mon Jun  1 08:01:00 2026" 相当（空白次第でずれる）
+        scheduled_str = " ".join(parts[1:6])
+        try:
+            scheduled_dt = datetime.strptime(scheduled_str, "%a %b %d %H:%M:%S %Y")
+            scheduled_label = scheduled_dt.strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            scheduled_label = scheduled_str
+
+        # コマンドから -s, -d, -o を抽出
+        def extract_opt(flag):
+            m = re.search(rf'{flag}\s+(\S+)', cmd)
+            return m.group(1) if m else "-"
+
+        jobs.append((job_id, scheduled_label, extract_opt("-s"), extract_opt("-d"), extract_opt("-o")))
+
+    if not jobs:
+        console.print("[blue]ℹ️ 録音スケジュールは登録されていません[/blue]")
+        return
+
+    table = Table(title="📅 録音スケジュール一覧", show_lines=False)
+    table.add_column("JobID", style="dim", justify="right")
+    table.add_column("録音開始", style="green")
+    table.add_column("局ID", style="cyan")
+    table.add_column("時間(分)", style="cyan", justify="right")
+    table.add_column("出力ファイル", style="dim", overflow="fold")
+    for job_id, scheduled_label, station, dur, out in jobs:
+        table.add_row(job_id, scheduled_label, station, dur, out)
+    console.print(table)
+
+@cli.command("cancel-schedule")
+@click.argument("job_id")
+def cancel_schedule(job_id):
+    """指定した at ジョブ ID の録音スケジュールを取り消す"""
+    try:
+        result = subprocess.run(["atrm", job_id], capture_output=True, text=True)
+        if result.returncode == 0:
+            console.print(f"[green]✅ ジョブ {job_id} を取り消しました[/green]")
+        else:
+            console.print(f"[red]❌ 取り消し失敗: {result.stderr.strip()}[/red]")
+    except FileNotFoundError:
+        console.print("[red]❌ at コマンドが見つかりません（sudo apt install at）[/red]")
+
+@cli.command("embed-art")
+@click.argument("audio_file")
+@click.argument("station_id")
+@click.argument("date")
+@click.argument("ftime")
+def embed_art(audio_file, station_id, date, ftime):
+    """録音ファイルに番組のカバーアートを埋め込む
+
+    例: embed-art YFM_20260531_0800.m4a YFM 20260531 0800
+    """
+    ensure_tables_exist()
+    info = get_program_info_at_time(station_id, date, ftime)
+    if not info:
+        console.print(f"[yellow]⚠ {station_id} {date} {ftime} に該当する番組が DB に見つかりません[/yellow]")
+        return
+    url, title = info
+    if not url:
+        console.print(f"[yellow]⚠ 番組 '{title}' の URL が登録されていません[/yellow]")
+        return
+
+    console.print(f"[blue]🖼 og:image を取得中: {url}[/blue]")
+    result = fetch_og_image(url)
+    if not result:
+        console.print("[yellow]⚠ og:image が見つかりませんでした[/yellow]")
+        return
+    image_bytes, ext = result
+
+    console.print("[blue]🎨 カバーアートを埋め込み中...[/blue]")
+    if embed_cover_art(audio_file, image_bytes, ext):
+        console.print(f"[green]✅ カバーアートを埋め込みました: {audio_file}[/green]")
+    else:
+        console.print("[red]❌ カバーアートの埋め込みに失敗しました[/red]")
+
+@cli.command("schedule-record")
+@click.argument("station_id")
+@click.argument("date")
+@click.argument("ftime")
+@click.argument("duration", type=int)
+@click.option("--start-offset", "start_offset_str", default="0s", show_default=True,
+              metavar="OFFSET", help="録音開始オフセット（例: 1m, 90s）")
+@click.option("--end-offset", "end_offset_str", default="0s", show_default=True,
+              metavar="OFFSET", help="録音終了オフセット（例: 30s, 2m）")
+@click.option("--output", "-o", default=None, help="出力ファイルパス（省略時は自動生成）")
+@click.option("--register", is_flag=True, help="atコマンドで実際に登録する")
+@click.option("--with-art", "with_art", is_flag=True, help="録音後に番組のカバーアートを埋め込む")
+def schedule_record(station_id, date, ftime, duration, start_offset_str, end_offset_str, output, register, with_art):
+    """search 結果の STATION_ID DATE FTIME DURATION から at 録音ジョブを生成・登録
+
+    例: schedule-record YFM 20260531 0800 73 --start-offset 1m --end-offset 30s --with-art
+    """
+    start_offset_secs = parse_offset(start_offset_str)
+    end_offset_secs = parse_offset(end_offset_str)
+
+    scheduled_start = datetime.strptime(f"{date}{ftime}", "%Y%m%d%H%M")
+    actual_start = scheduled_start + timedelta(seconds=start_offset_secs)
+    actual_duration_secs = duration * 60 + end_offset_secs
+    actual_duration_mins = math.ceil(actual_duration_secs / 60)
+    actual_end = actual_start + timedelta(seconds=actual_duration_secs)
+
+    if not output:
+        output = str(Path.cwd() / f"{station_id}_{date}_{ftime}.m4a")
+    else:
+        output = str(Path(output).resolve())
+
+    cli_path = str(Path(__file__).resolve())
+    radish_cmd = (
+        f"bash {RADISH_PATH} -t radiko -s {station_id}"
+        f" -d {actual_duration_mins} -o {output} -m record"
+    )
+    if with_art:
+        radish_cmd += (
+            f" && python {cli_path} embed-art {output} {station_id} {date} {ftime}"
+        )
+
+    info = Table(show_header=False, box=None, padding=(0, 1))
+    info.add_column("", style="bold")
+    info.add_column("")
+    info.add_row("局", f"[cyan]{station_id}[/cyan]")
+    info.add_row("番組開始（予定）", scheduled_start.strftime("%Y-%m-%d %H:%M"))
+    start_label = actual_start.strftime("%Y-%m-%d %H:%M:%S")
+    if start_offset_secs:
+        start_label += f" [dim](+{fmt_duration(start_offset_secs)})[/dim]"
+    info.add_row("録音開始", start_label)
+    dur_label = fmt_duration(actual_duration_secs)
+    if actual_duration_secs % 60:
+        dur_label += f" [dim](→ {actual_duration_mins}分 で -d 指定)[/dim]"
+    info.add_row("録音時間", dur_label)
+    info.add_row("録音終了（予定）", actual_end.strftime("%Y-%m-%d %H:%M:%S"))
+    info.add_row("出力ファイル", output)
+    if with_art:
+        info.add_row("カバーアート", "[green]録音後に自動取得[/green]")
+    console.print(info)
+    console.print()
+
+    at_time = actual_start.strftime("%H:%M %Y-%m-%d")
+    console.print("[bold]at コマンド:[/bold]")
+    console.print(f"  [green]echo '{radish_cmd}' | at {at_time}[/green]")
+
+    if register:
+        try:
+            result = subprocess.run(
+                ["at", actual_start.strftime("%H:%M"), actual_start.strftime("%Y-%m-%d")],
+                input=radish_cmd + "\n",
+                text=True,
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                console.print(f"[green]✅ at ジョブを登録しました[/green]")
+                if result.stderr:
+                    console.print(f"[dim]{result.stderr.strip()}[/dim]")
+            else:
+                console.print(f"[red]❌ at 登録失敗: {result.stderr.strip()}[/red]")
+        except FileNotFoundError:
+            console.print("[red]❌ at コマンドが見つかりません（sudo apt install at）[/red]")
 
 if __name__ == "__main__":
     cli()
