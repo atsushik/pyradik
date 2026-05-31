@@ -839,5 +839,54 @@ def schedule_record(station_id, date, ftime, duration, start_offset_str, end_off
         except FileNotFoundError:
             console.print("[red]❌ at コマンドが見つかりません（sudo apt install at）[/red]")
 
+@cli.command("timefree-record")
+@click.argument("station_id")
+@click.argument("date")
+@click.argument("ftime")
+@click.argument("duration", type=int)
+@click.option("--output", "-o", default=None, help="出力ファイルパス（省略時は自動生成）")
+@click.option("--with-art", "with_art", is_flag=True, help="番組のカバーアートを埋め込む")
+def timefree_record(station_id, date, ftime, duration, output, with_art):
+    """過去の番組をタイムフリーで録音する（放送後7日以内）
+
+    例: timefree-record YFM 20260531 0800 73
+    """
+    ensure_tables_exist()
+    from_time = f"{date}{ftime}00"
+
+    if not output:
+        output = str(Path.cwd() / f"{station_id}_{date}_{ftime}.m4a")
+    else:
+        output = str(Path(output).resolve())
+
+    console.print(f"[cyan]📻 タイムフリー録音開始: {station_id} {date[:4]}/{date[4:6]}/{date[6:]} {ftime[:2]}:{ftime[2:]} ({duration}分)[/cyan]")
+
+    result = subprocess.run(
+        ["bash", RADISH_PATH, "-t", "radiko", "-s", station_id,
+         "-f", from_time, "-d", str(duration), "-o", output, "-m", "record"],
+    )
+    if result.returncode != 0:
+        console.print("[red]❌ 録音失敗[/red]")
+        return
+
+    console.print(f"[green]✅ 録音完了: {output}[/green]")
+
+    if with_art:
+        info = get_program_info_at_time(station_id, date, ftime)
+        if not info or not info[0]:
+            console.print("[yellow]⚠ カバーアート: 番組 URL が見つかりません[/yellow]")
+            return
+        url, _ = info
+        console.print(f"[blue]🖼 og:image を取得中: {url}[/blue]")
+        art = fetch_og_image(url)
+        if not art:
+            console.print("[yellow]⚠ og:image が見つかりませんでした[/yellow]")
+            return
+        image_bytes, ext = art
+        if embed_cover_art(output, image_bytes, ext):
+            console.print(f"[green]✅ カバーアートを埋め込みました[/green]")
+        else:
+            console.print("[red]❌ カバーアートの埋め込みに失敗しました[/red]")
+
 if __name__ == "__main__":
     cli()

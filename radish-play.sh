@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # Japan internet radio live streaming recoder
 # Copyright (C) 2019 uru (https://twitter.com/uru_2)
@@ -23,6 +23,7 @@ Options:
                     shiburadi: Shibuya no Radio
   -s STATION ID   Station ID
   -d MINUTE       Record minute(s)
+  -f FROM_TIME    Timefree start time YYYYMMDDHHmmss (radiko only)
   -o FILEPATH     Output file path
   -i ADDRESS      login mail address (radiko only)
   -p PASSWORD     login password (radiko only)
@@ -208,6 +209,21 @@ get_hls_uri_nhk() {
 # Returns:
 #   None
 #######################################
+get_hls_uri_radiko_timefree() {
+  station_id=$1
+  from_time=$2
+  to_time=$3
+  radiko_login_status=$4
+
+  areafree="0"
+  if [ "${radiko_login_status}" = "1" ]; then
+    areafree="1"
+  fi
+
+  uri=$(curl --silent "https://radiko.jp/v3/station/stream/pc_html5/${station_id}.xml" | xmllint --xpath "/urls/url[@timefree='1' and @areafree='${areafree}'][1]/playlist_create_url/text()" - | sed 's/\&amp;/\&/g' 2> /dev/null)
+  echo "${uri}?station_id=${station_id}&ft=${from_time}&to=${to_time}&l=15&type=b&lsid="
+}
+
 get_hls_uri_radiko() {
   station_id=$1
   radiko_login_status=$2
@@ -267,7 +283,8 @@ output=""
 login_id=""
 login_password=""
 mode=""
-while getopts t:s:d:o:i:p:m:l option; do
+from_time=""
+while getopts t:s:d:o:i:p:m:f:l option; do
   case "${option}" in
     t)
       type="${OPTARG}"
@@ -289,6 +306,9 @@ while getopts t:s:d:o:i:p:m:l option; do
       ;;
     m)
       mode="${OPTARG}"
+      ;;
+    f)
+      from_time="${OPTARG}"
       ;;
     l)
       show_all_stations
@@ -361,6 +381,7 @@ fi
 
 playlist_uri=""
 radiko_authtoken=""
+radiko_headers=""
 
 # Record type processes
 if [ "${type}" = "nhk" ]; then
@@ -397,7 +418,19 @@ elif [ "${type}" = "radiko" ]; then
     exit 1
   fi
 
-  playlist_uri=$(get_hls_uri_radiko "${station_id}" "${radiko_login_status}")
+  # CDN が Range: bytes=0- に対し誤った応答を返すため空の Range で上書きする
+  radiko_headers="X-Radiko-Authtoken: ${radiko_authtoken}"$'\r\n'"Range: "
+
+  if [ -n "${from_time}" ]; then
+    to_time=$(date -d "${from_time:0:4}-${from_time:4:2}-${from_time:6:2} ${from_time:8:2}:${from_time:10:2}:${from_time:12:2} ${duration} minutes" "+%Y%m%d%H%M%S" 2>/dev/null)
+    if [ -z "${to_time}" ]; then
+      echo "Cannot calculate to_time from from_time=${from_time} and duration=${duration}" >&2
+      exit 1
+    fi
+    playlist_uri=$(get_hls_uri_radiko_timefree "${station_id}" "${from_time}" "${to_time}" "${radiko_login_status}")
+  else
+    playlist_uri=$(get_hls_uri_radiko "${station_id}" "${radiko_login_status}")
+  fi
 fi
 if [ -z "${playlist_uri}" ]; then
   echo "Cannot get playlist URI" >&2
@@ -411,7 +444,7 @@ if [ "${mode}" = "play" ]; then
     ffplay \
       -loglevel error \
       -fflags +discardcorrupt \
-      -headers "X-Radiko-Authtoken: ${radiko_authtoken}" \
+      -headers "${radiko_headers}" \
       -i "${playlist_uri}" \
       -nodisp
       # -rtbufsize 1500M \
@@ -435,17 +468,31 @@ if [ "${mode}" = "play" ]; then
 fi
 # Record
 if [ "${type}" = "radiko" ]; then
-  ffmpeg \
-      -loglevel error \
-      -fflags +discardcorrupt \
-      -headers "X-Radiko-Authtoken: ${radiko_authtoken}" \
-      -i "${playlist_uri}" \
-      -acodec copy \
-      -vn \
-      -bsf:a aac_adtstoasc \
-      -y \
-      -t "$(format_time "${duration}")" \
-      "${output}"
+  if [ -n "${from_time}" ]; then
+    # タイムフリー: ストリームが自然終了するので -t 不要
+    ffmpeg \
+        -loglevel error \
+        -fflags +discardcorrupt \
+        -headers "${radiko_headers}" \
+        -i "${playlist_uri}" \
+        -acodec copy \
+        -vn \
+        -bsf:a aac_adtstoasc \
+        -y \
+        "${output}"
+  else
+    ffmpeg \
+        -loglevel error \
+        -fflags +discardcorrupt \
+        -headers "${radiko_headers}" \
+        -i "${playlist_uri}" \
+        -acodec copy \
+        -vn \
+        -bsf:a aac_adtstoasc \
+        -y \
+        -t "$(format_time "${duration}")" \
+        "${output}"
+  fi
 else
   ffmpeg \
       -loglevel error \
