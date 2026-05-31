@@ -41,11 +41,15 @@ _EOT_
 show_all_stations() {
   # Radiru
   # echo "Record type: nhk"
-  list=$(curl --silent "https://www.nhk.or.jp/radio/config/config_v5.8.0_radiru_and.xml")
-  cnt=$(echo "${list}" | xmllint --xpath "count(/radiru_config/area)" - 2> /dev/null)
+  list=$(curl --silent "https://www.nhk.or.jp/radio/config/config_web.xml")
+  cnt=$(echo "${list}" | xmllint --xpath "count(/radiru_config/stream_url/data)" - 2> /dev/null)
   for i in $(awk "BEGIN { for (i = 1; i <= ${cnt}; i++) { print i } }"); do
-    echo "nhk,$(echo "${list}" | xmllint --xpath "concat(string((/radiru_config/area)[${i}]/@id), '-r1,', string((/radiru_config/area)[${i}]/@name), ' R1')" - 2> /dev/null)"
-    echo "nhk,$(echo "${list}" | xmllint --xpath "concat(string((/radiru_config/area)[${i}]/@id), '-fm,', string((/radiru_config/area)[${i}]/@name), ' FM')" - 2> /dev/null)"
+    area_nm=$(echo "${list}" | xmllint --xpath "concat(/radiru_config/stream_url/data[${i}]/area/text(), ':', /radiru_config/stream_url/data[${i}]/areajp/text())" - 2> /dev/null)
+    area=$(echo "${area_nm}" | cut -d ':' -f1)
+    area_jp=$(echo "${area_nm}" | cut -d ':' -f2)
+    echo "nhk,${area}-r1,${area_jp} R1"
+    echo "nhk,${area}-r2,${area_jp} R2"
+    echo "nhk,${area}-fm,${area_jp} FM"
   done
   # echo "  r2: R2"
   # echo ""
@@ -190,15 +194,10 @@ radiko_authorize() {
 get_hls_uri_nhk() {
   station_id=$1
 
-  if [ "${station_id}" = "r2" ]; then
-    # R2
-    curl --silent "https://www.nhk.or.jp/radio/config/config_v5.8.0_radiru_and.xml" | xmllint --xpath "string(/radiru_config/config[@key='url_stream_r2']/value[1]/@text)" - 2> /dev/null
-  else
-    # Split area and channel
-    area="$(echo "${station_id}" | cut -d '-' -f 1)"
-    channel="$(echo "${station_id}" | cut -d '-' -f 2)"
-    curl --silent "https://www.nhk.or.jp/radio/config/config_v5.8.0_radiru_and.xml" | xmllint --xpath "string(/radiru_config/area[@id='${area}']/config[@key='url_stream_${channel}']/value[1]/@text)" - 2> /dev/null
-  fi
+  # Split area and channel
+  area="$(echo "${station_id}" | cut -d '-' -f 1)"
+  channel="$(echo "${station_id}" | cut -d '-' -f 2)"
+  curl --silent "https://www.nhk.or.jp/radio/config/config_web.xml" | xmllint --xpath "string(/radiru_config/stream_url/data[area='${area}']/${channel}hls/text())" - 2> /dev/null
 }
 
 #######################################
@@ -218,7 +217,8 @@ get_hls_uri_radiko() {
     areafree="1"
   fi
 
-  curl --silent "https://radiko.jp/v3/station/stream/aHybrid01/${station_id}.xml" | xmllint --xpath "/urls/url[@timefree='0' and @areafree='${areafree}'][1]/playlist_create_url/text()" - | sed 's/\&amp;/\&/g' 2> /dev/null
+  uri=$(curl --silent "https://radiko.jp/v3/station/stream/pc_html5/${station_id}.xml" | xmllint --xpath "/urls/url[@timefree='0' and @areafree='${areafree}'][playlist_create_url[not(contains(text(),'_definst_'))]][2]/playlist_create_url/text()" - | sed 's/\&amp;/\&/g' 2> /dev/null)
+  echo "${uri}?station_id=${station_id}&l=15&type=c&lsid="
 }
 
 #######################################
@@ -232,17 +232,6 @@ get_hls_uri_lisradi() {
   station_id=$1
 
   curl --silent "http://listenradio.jp/service/channel.aspx" | jq -r ".Channel[] | select(.ChannelId == ${station_id}) | .ChannelHls" 2> /dev/null
-}
-
-#######################################
-# Get Shibuya no Radio HLS streaming URI
-# Arguments:
-#   None
-# Returns:
-#   None
-#######################################
-get_hls_uri_shiburadi() {
-  curl --silent "https://shibuyanoradio.info/infoapi/?ver=1.1" | jq -r ".basicinfo.hls_playback" 2> /dev/null
 }
 
 #######################################
@@ -345,14 +334,10 @@ if [ ${ret} -ne 0 ]; then
   echo "Invalid \"Record minute\"" >&2
   exit 1
 fi
-if [ "${type}" = "shiburadi" ]; then
-  station_id="shiburadi"
-else
-  if [ -z "${station_id}" ]; then
-    # -s value is empty
-    echo "Require \"Station ID\"" >&2
-    exit 1
-  fi
+if [ -z "${station_id}" ]; then
+  # -s value is empty
+  echo "Require \"Station ID\"" >&2
+  exit 1
 fi
 if [ -z "${mode}" ]; then
   # -m value is empty
@@ -363,9 +348,6 @@ fi
 
 # Generate default file path
 file_ext="m4a"
-if [ "${type}" = "shiburadi" ]; then
-  file_ext="mp3"
-fi
 if [ -z "${output}" ]; then
   output="${station_id}_$(date +%Y%m%d%H%M%S).${file_ext}"
 else
@@ -387,9 +369,6 @@ if [ "${type}" = "nhk" ]; then
 elif [ "${type}" = "lisradi" ]; then
   # ListenRadio
   playlist_uri=$(get_hls_uri_lisradi "${station_id}")
-elif [ "${type}" = "shiburadi" ]; then
-  # Shibuya no Radio
-  playlist_uri=$(get_hls_uri_shiburadi)
 elif [ "${type}" = "radiko" ]; then
   # radiko
   radiko_session=""
@@ -467,20 +446,11 @@ if [ "${type}" = "radiko" ]; then
       -y \
       -t "$(format_time "${duration}")" \
       "${output}"
-elif [ "${type}" = "shiburadi" ]; then
-  ffmpeg \
-      -loglevel error \
-      -fflags +discardcorrupt \
-      -i "${playlist_uri}" \
-      -acodec copy \
-      -vn \
-      -y \
-      -t "$(format_time "${duration}")" \
-      "${output}"
 else
   ffmpeg \
       -loglevel error \
       -fflags +discardcorrupt \
+      -http_persistent 0 \
       -i "${playlist_uri}" \
       -acodec copy \
       -vn \
