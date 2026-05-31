@@ -21,9 +21,13 @@
 
 ### radi.sh / radish-play.sh
 - curl
-- libxml2 (xmllintのみ使用)
+- libxml2-utils (xmllint)
 - jq
 - FFmpeg (3.x以降 要AAC,HLSサポート)
+
+```
+sudo apt install curl libxml2-utils jq ffmpeg
+```
 
 ### radiko_cli.py
 - Python 3
