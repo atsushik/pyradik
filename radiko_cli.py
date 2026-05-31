@@ -237,9 +237,9 @@ def show_now():
     placeholders = ",".join(["?"] * len(enabled))
 
     cur.execute(f"""
-    SELECT p.station_id, s.name, p.ftime, p.duration, p.title, p.pfm, p.url
+    SELECT p.station_id, COALESCE(s.name, p.station_id), p.ftime, p.duration, p.title, p.pfm, p.url
     FROM programs p
-    JOIN stations s ON p.station_id = s.station_id
+    LEFT JOIN stations s ON p.station_id = s.station_id
     WHERE p.date = ? AND p.station_id IN ({placeholders})
     """, (now_date, *enabled))
 
@@ -281,7 +281,7 @@ def update_db():
     """[green]rx2[/green] コマンドを実行してDBに番組情報を更新"""
     ensure_tables_exist()
     try:
-        result = subprocess.run(["bash", RX2_PATH], capture_output=True, text=True, check=True)
+        result = subprocess.run(["bash", RX2_PATH], capture_output=True, encoding='utf-8', errors='replace', check=True)
         lines = result.stdout.strip().splitlines()
     except subprocess.CalledProcessError as e:
         console.print(f"[red]❌ rx2 実行エラー: {e}[/red]")
@@ -333,11 +333,9 @@ def update_db():
     conn.commit()
     conn.close()
     console.print(f"[green]✅ {inserted} 件の番組をDBに登録しました[/green]")
+    _update_stations_inner()
 
-@cli.command("update-stations")
-def update_stations():
-    """[blue]radish-play.sh -l[/blue] から放送局一覧を更新"""
-    ensure_tables_exist()
+def _update_stations_inner():
     try:
         result = subprocess.run(
             ["bash", "/home/atsushi/git/radish/radish-play.sh", "-l"],
@@ -373,6 +371,12 @@ def update_stations():
     conn.commit()
     conn.close()
     console.print(f"[green]✅ {inserted} 局を登録（{skipped} 行スキップ）[/green]")
+
+@cli.command("update-stations")
+def update_stations():
+    """[blue]radish-play.sh -l[/blue] から放送局一覧を更新"""
+    ensure_tables_exist()
+    _update_stations_inner()
 
 @cli.command("list-stations")
 @click.option("--service", default="radiko", show_default=True, help="対象サービス（例: radiko, nhk）")
@@ -481,9 +485,9 @@ def now_playing():
         cur = conn.cursor()
 
         cur.execute("""
-        SELECT p.ftime, p.duration, p.title, p.pfm, p.url, s.name
+        SELECT p.ftime, p.duration, p.title, p.pfm, p.url, COALESCE(s.name, p.station_id)
         FROM programs p
-        JOIN stations s ON p.station_id = s.station_id
+        LEFT JOIN stations s ON p.station_id = s.station_id
         WHERE p.date = ? AND p.station_id = ?
         """, (now_date, station_id))
 
@@ -518,9 +522,9 @@ def search_program(keyword):
     like = f"%{keyword}%"
 
     cur.execute("""
-    SELECT p.date, p.ftime, s.name, p.title, p.pfm, p.url
+    SELECT p.date, p.ftime, COALESCE(s.name, p.station_id), p.title, p.pfm, p.url
     FROM programs p
-    JOIN stations s ON p.station_id = s.station_id
+    LEFT JOIN stations s ON p.station_id = s.station_id
     WHERE p.title LIKE ? OR p.pfm LIKE ? OR p.info LIKE ?
     ORDER BY p.date, p.ftime
     """, (like, like, like))
