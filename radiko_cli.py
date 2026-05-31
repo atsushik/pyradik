@@ -622,7 +622,7 @@ def search_program(keyword):
     like = f"%{keyword}%"
 
     cur.execute("""
-    SELECT p.date, p.ftime, p.station_id, COALESCE(s.name, p.station_id), p.duration, p.title, p.pfm, p.url
+    SELECT p.prog_id, p.date, p.ftime, p.station_id, COALESCE(s.name, p.station_id), p.duration, p.title, p.pfm, p.url
     FROM programs p
     LEFT JOIN stations s ON p.station_id = s.station_id
     WHERE p.title LIKE ? OR p.pfm LIKE ? OR p.info LIKE ?
@@ -637,6 +637,7 @@ def search_program(keyword):
         return
 
     table = Table(title=f"🔍 キーワード検索結果: '{keyword}'", show_lines=False)
+    table.add_column("prog_id", style="dim")
     table.add_column("日付", style="green")
     table.add_column("開始", style="cyan")
     table.add_column("局ID", style="dim")
@@ -644,10 +645,10 @@ def search_program(keyword):
     table.add_column("分", style="cyan", justify="right")
     table.add_column("番組名", style="magenta")
     table.add_column("パーソナリティ", style="dim")
-    table.add_column("URL", style="blue", overflow="fold")
 
-    for date, ftime, station_id, name, duration, title, pfm, url in results:
+    for prog_id, date, ftime, station_id, name, duration, title, pfm, url in results:
         table.add_row(
+            prog_id,
             f"{date[:4]}/{date[4:6]}/{date[6:]}",
             f"{ftime[:2]}:{ftime[2:]}",
             station_id,
@@ -655,7 +656,6 @@ def search_program(keyword):
             str(duration),
             title,
             pfm,
-            url or "-"
         )
 
     console.print(table)
@@ -887,6 +887,131 @@ def timefree_record(station_id, date, ftime, duration, output, with_art):
             console.print(f"[green]✅ カバーアートを埋め込みました[/green]")
         else:
             console.print("[red]❌ カバーアートの埋め込みに失敗しました[/red]")
+
+@cli.command("record")
+@click.argument("prog_id")
+@click.option("--start-offset", "start_offset_str", default="0s", show_default=True,
+              metavar="OFFSET", help="録音開始オフセット（例: 1m, 90s）")
+@click.option("--end-offset", "end_offset_str", default="0s", show_default=True,
+              metavar="OFFSET", help="録音終了オフセット（例: 30s, 2m）")
+@click.option("--output", "-o", default=None, help="出力ファイルパス（省略時は自動生成）")
+@click.option("--with-art", "with_art", is_flag=True, help="番組のカバーアートを埋め込む")
+@click.option("--register", is_flag=True, help="未来の番組をatコマンドで登録する")
+def record_by_prog_id(prog_id, start_offset_str, end_offset_str, output, with_art, register):
+    """prog_id を指定して録音（過去→タイムフリー、未来→atスケジュール、放送中→即時）
+
+    例: record 13392705 --with-art
+    """
+    ensure_tables_exist()
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT p.station_id, p.date, p.ftime, p.duration, p.title, COALESCE(s.name, p.station_id)
+        FROM programs p
+        LEFT JOIN stations s ON p.station_id = s.station_id
+        WHERE p.prog_id = ?
+    """, (prog_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        console.print(f"[yellow]⚠ prog_id '{prog_id}' が DB に見つかりません[/yellow]")
+        return
+
+    station_id, date, ftime, duration, title, station_name = row
+    scheduled_start = datetime.strptime(f"{date}{ftime}", "%Y%m%d%H%M")
+    scheduled_end = scheduled_start + timedelta(minutes=duration)
+    now = datetime.now()
+
+    safe_title = re.sub(r'[^\w　-鿿゠-ヿ぀-ゟ]', '_', title)[:40]
+    if not output:
+        output = str(Path.cwd() / f"{station_id}_{date}_{ftime}_{safe_title}.m4a")
+    else:
+        output = str(Path(output).resolve())
+
+    console.print(f"[bold]📻 {station_name} / {title}[/bold]")
+    console.print(f"   {scheduled_start.strftime('%Y-%m-%d %H:%M')} - {scheduled_end.strftime('%H:%M')} ({duration}分)")
+
+    if scheduled_end < now:
+        # 過去の番組 → タイムフリー
+        console.print("[blue]→ 過去の番組: タイムフリー録音[/blue]")
+        from_time = f"{date}{ftime}00"
+        result = subprocess.run(
+            ["bash", RADISH_PATH, "-t", "radiko", "-s", station_id,
+             "-f", from_time, "-d", str(duration), "-o", output, "-m", "record"],
+        )
+        if result.returncode != 0:
+            console.print("[red]❌ 録音失敗[/red]")
+            return
+        console.print(f"[green]✅ 録音完了: {output}[/green]")
+
+    elif scheduled_start > now:
+        # 未来の番組 → at スケジュール
+        console.print("[blue]→ 未来の番組: at スケジュール録音[/blue]")
+        start_offset_secs = parse_offset(start_offset_str)
+        end_offset_secs = parse_offset(end_offset_str)
+        actual_start = scheduled_start + timedelta(seconds=start_offset_secs)
+        actual_duration_mins = math.ceil((duration * 60 + end_offset_secs) / 60)
+
+        cli_path = str(Path(__file__).resolve())
+        radish_cmd = (
+            f"bash {RADISH_PATH} -t radiko -s {station_id}"
+            f" -d {actual_duration_mins} -o {output} -m record"
+        )
+        if with_art:
+            radish_cmd += f" && python {cli_path} embed-art {output} {station_id} {date} {ftime}"
+
+        at_time = actual_start.strftime("%H:%M %Y-%m-%d")
+        console.print(f"  録音開始: {actual_start.strftime('%Y-%m-%d %H:%M:%S')}")
+        console.print(f"  録音時間: {fmt_duration(duration * 60 + end_offset_secs)}")
+        console.print(f"  出力: {output}")
+        console.print()
+        console.print(f"[bold]at コマンド:[/bold]")
+        console.print(f"  [green]echo '{radish_cmd}' | at {at_time}[/green]")
+
+        if register:
+            try:
+                result = subprocess.run(
+                    ["at", actual_start.strftime("%H:%M"), actual_start.strftime("%Y-%m-%d")],
+                    input=radish_cmd + "\n", text=True, capture_output=True,
+                )
+                if result.returncode == 0:
+                    console.print(f"[green]✅ at ジョブを登録しました[/green]")
+                    if result.stderr:
+                        console.print(f"[dim]{result.stderr.strip()}[/dim]")
+                else:
+                    console.print(f"[red]❌ at 登録失敗: {result.stderr.strip()}[/red]")
+            except FileNotFoundError:
+                console.print("[red]❌ at コマンドが見つかりません（sudo apt install at）[/red]")
+        return
+
+    else:
+        # 放送中 → 即時録音
+        remaining = int((scheduled_end - now).total_seconds() / 60) + 1
+        console.print(f"[blue]→ 放送中: 残り約 {remaining} 分を即時録音[/blue]")
+        result = subprocess.run(
+            ["bash", RADISH_PATH, "-t", "radiko", "-s", station_id,
+             "-d", str(remaining), "-o", output, "-m", "record"],
+        )
+        if result.returncode != 0:
+            console.print("[red]❌ 録音失敗[/red]")
+            return
+        console.print(f"[green]✅ 録音完了: {output}[/green]")
+
+    if with_art:
+        info = get_program_info_at_time(station_id, date, ftime)
+        if info and info[0]:
+            url_val, _ = info
+            console.print(f"[blue]🖼 og:image を取得中: {url_val}[/blue]")
+            art = fetch_og_image(url_val)
+            if art:
+                image_bytes, ext = art
+                if embed_cover_art(output, image_bytes, ext):
+                    console.print("[green]✅ カバーアートを埋め込みました[/green]")
+                else:
+                    console.print("[red]❌ カバーアートの埋め込みに失敗しました[/red]")
+            else:
+                console.print("[yellow]⚠ og:image が見つかりませんでした[/yellow]")
 
 if __name__ == "__main__":
     cli()
