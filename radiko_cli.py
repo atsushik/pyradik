@@ -147,6 +147,7 @@ def create_tables():
         url TEXT,
         pfm TEXT,
         info TEXT,
+        image_url TEXT,
         PRIMARY KEY (station_id, prog_id)
     )
     """)
@@ -160,10 +161,18 @@ def ensure_tables_exist():
     cur = conn.cursor()
     cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
     existing = {row[0] for row in cur.fetchall()}
-    conn.close()
     if "stations" not in existing or "programs" not in existing:
+        conn.close()
         console.print("[blue]ℹ️ 必要なテーブルが存在しないため、自動的に初期化します[/blue]")
         create_tables()
+        return
+    cur.execute("PRAGMA table_info(programs)")
+    cols = {row[1] for row in cur.fetchall()}
+    if "image_url" not in cols:
+        cur.execute("ALTER TABLE programs ADD COLUMN image_url TEXT")
+        conn.commit()
+        console.print("[blue]ℹ️ image_url カラムを追加しました[/blue]")
+    conn.close()
 
 def load_enabled_stations(filepath):
     if not Path(filepath).exists():
@@ -328,7 +337,7 @@ def show_now():
 
     if use_all:
         cur.execute("""
-        SELECT p.station_id, COALESCE(s.name, p.station_id), p.ftime, p.duration, p.title, p.pfm, p.url
+        SELECT p.station_id, COALESCE(s.name, p.station_id), p.ftime, p.duration, p.title, p.pfm, p.url, p.prog_id
         FROM programs p
         LEFT JOIN stations s ON p.station_id = s.station_id
         WHERE p.date = ?
@@ -336,7 +345,7 @@ def show_now():
     else:
         placeholders = ",".join(["?"] * len(enabled))
         cur.execute(f"""
-        SELECT p.station_id, COALESCE(s.name, p.station_id), p.ftime, p.duration, p.title, p.pfm, p.url
+        SELECT p.station_id, COALESCE(s.name, p.station_id), p.ftime, p.duration, p.title, p.pfm, p.url, p.prog_id
         FROM programs p
         LEFT JOIN stations s ON p.station_id = s.station_id
         WHERE p.date = ? AND p.station_id IN ({placeholders})
@@ -347,14 +356,19 @@ def show_now():
         start = int(row[2][:2]) * 60 + int(row[2][2:])
         end = start + row[3]
         if start <= now_minutes < end:
+            end_h, end_m = divmod(end, 60)
+            remaining = end - now_minutes
             rows.append({
                 "station_id": row[0],
                 "station_name": row[1],
                 "start": f"{row[2][:2]}:{row[2][2:]}",
+                "end": f"{end_h % 24:02d}:{end_m:02d}",
+                "remaining": remaining,
                 "duration": row[3],
                 "title": row[4],
                 "pfm": row[5],
                 "url": row[6],
+                "prog_id": row[7],
             })
     conn.close()
 
@@ -367,14 +381,68 @@ def show_now():
     table.add_column("放送局ID", style="cyan")
     table.add_column("放送局", style="cyan")
     table.add_column("開始", style="green")
+    table.add_column("終了", style="green")
+    table.add_column("残り", style="yellow", justify="right")
     table.add_column("番組名", style="bold")
     table.add_column("パーソナリティ", style="magenta")
+    table.add_column("番組ID", style="dim")
     table.add_column("URL", style="blue", overflow="fold")
 
     for p in rows:
-        table.add_row(p["station_id"], p["station_name"], p["start"], p["title"], p["pfm"], p["url"] or "-")
+        remaining_str = f"{p['remaining']}分" if p['remaining'] >= 1 else "間もなく終了"
+        table.add_row(p["station_id"], p["station_name"], p["start"], p["end"], remaining_str, p["title"], p["pfm"], p["prog_id"] or "-", p["url"] or "-")
 
     console.print(table)
+
+@cli.command("show-program")
+@click.argument("prog_id")
+def show_program(prog_id):
+    """番組IDを指定して番組の詳細情報を表示"""
+    ensure_tables_exist()
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT p.station_id, COALESCE(s.name, p.station_id), p.date, p.weekday,
+               p.ftime, p.duration, p.title, p.pfm, p.url, p.info, p.image_url, p.prog_id
+        FROM programs p
+        LEFT JOIN stations s ON p.station_id = s.station_id
+        WHERE p.prog_id = ?
+    """, (prog_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        console.print(f"[red]❌ 番組ID {prog_id} が見つかりません[/red]")
+        return
+
+    station_id, station_name, date, weekday, ftime, duration, title, pfm, url, info, image_url, prog_id_ = row
+    start_h, start_m = int(ftime[:2]), int(ftime[2:])
+    start_min = start_h * 60 + start_m
+    end_min = start_min + duration
+    end_h, end_m = divmod(end_min, 60)
+    date_fmt = f"{date[:4]}-{date[4:6]}-{date[6:]}"
+
+    from rich.panel import Panel
+    from rich.table import Table as RichTable
+
+    detail = RichTable.grid(padding=(0, 2))
+    detail.add_column(style="bold dim", justify="right")
+    detail.add_column()
+
+    detail.add_row("番組ID",    prog_id_)
+    detail.add_row("放送局",    f"{station_name} ({station_id})")
+    detail.add_row("放送日",    f"{date_fmt} ({weekday})")
+    detail.add_row("時間",      f"{start_h:02d}:{start_m:02d} – {end_h % 24:02d}:{end_m:02d}  ({duration}分)")
+    detail.add_row("番組名",    f"[bold]{title}[/bold]")
+    if pfm:
+        detail.add_row("パーソナリティ", pfm)
+    detail.add_row("URL",   f"[blue]{url}[/blue]" if url else "-")
+    if image_url:
+        detail.add_row("画像URL", f"[blue]{image_url}[/blue]")
+    if info:
+        detail.add_row("番組情報", info)
+
+    console.print(Panel(detail, title=f"[bold cyan]📻 番組詳細[/bold cyan]", border_style="cyan"))
 
 @cli.command("update-programs")
 def update_db():
@@ -393,7 +461,7 @@ def update_db():
 
     FIELD_NAMES = [
         "station_id", "prog_id", "date", "weekday", "ftime", "duration",
-        "title", "url", "pfm", "info"
+        "title", "url", "pfm", "info", "image_url"
     ]
 
     conn = sqlite3.connect(DB_PATH)
@@ -401,18 +469,18 @@ def update_db():
     inserted = 0
 
     for line in lines[1:]:
-        parts = line.strip().split("\t", maxsplit=9)
+        parts = line.strip().split("\t", maxsplit=10)
         if len(parts) < 6:
             continue
-        row = dict(zip(FIELD_NAMES, parts + [""] * (10 - len(parts))))
+        row = dict(zip(FIELD_NAMES, parts + [""] * (11 - len(parts))))
         if not all(row.get(k) for k in ["station_id", "prog_id", "date", "ftime", "duration"]):
             continue
         try:
             cur.execute("""
                 INSERT OR REPLACE INTO programs (
                     station_id, prog_id, date, weekday, ftime, duration,
-                    title, url, pfm, info
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    title, url, pfm, info, image_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     row["station_id"],
                     row["prog_id"],
@@ -423,7 +491,8 @@ def update_db():
                     row["title"],
                     row["url"],
                     row["pfm"],
-                    row["info"]
+                    row["info"],
+                    row["image_url"]
                 )
             )
             inserted += 1

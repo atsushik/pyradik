@@ -137,6 +137,7 @@ title
 url
 pfm
 info
+img
 ...
 }
 
@@ -154,7 +155,8 @@ _flatten() {
     -v title -o $'\t' \
     -v url -o $'\t' \
     -v pfm -o $'\t' \
-    -v info -n \
+    -v info -o $'\t' \
+    -v img -n \
     "$xmldir/"*.xml |
     xmlstarlet unesc
 }
@@ -167,9 +169,9 @@ _search_tag() {
 _search_detag() {
   _search_tag "$@" |
     awkt '{
-    gsub(/<[^>]+>/, " ", $NF);
-    gsub(/  +/, " ", $NF);
-    sub(/^ /, "", $NF);
+    gsub(/<[^>]+>/, " ", $(NF-1));
+    gsub(/  +/, " ", $(NF-1));
+    sub(/^ /, "", $(NF-1));
     print;
   }'
 }
