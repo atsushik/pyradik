@@ -36,6 +36,24 @@ sudo apt install python3-rich python3-rich-click
 
 
 ## 使い方
+
+### radiko_cli.py（初回セットアップ）
+
+初回は番組表をダウンロードしてDBに格納する必要があります。
+
+```
+$ python ./radiko_cli.py update-programs
+```
+
+以降は番組検索や再生が利用できます。
+
+```
+$ python ./radiko_cli.py search 秀島史香
+$ python ./radiko_cli.py play J-WAVE
+$ python ./radiko_cli.py stop
+```
+
+### radi.sh
 ```
 $ ./radi.sh [options]
 ```
