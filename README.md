@@ -18,10 +18,21 @@
 
 
 ## 必要なもの
+
+### radi.sh / radish-play.sh
 - curl
 - libxml2 (xmllintのみ使用)
 - jq
 - FFmpeg (3.x以降 要AAC,HLSサポート)
+
+### radiko_cli.py
+- Python 3
+- python3-rich
+- python3-rich-click
+
+```
+sudo apt install python3-rich python3-rich-click
+```
 
 
 ## 使い方
