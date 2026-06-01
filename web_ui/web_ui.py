@@ -104,6 +104,66 @@ def get_programs(date: str):
     }
 
 
+@app.get("/api/search")
+def search_programs(q: str, scope: str = "enabled", aired: str = "upcoming,airing,aired"):
+    """番組検索。
+
+    scope: enabled=聴取可能な放送局のみ（デフォルト, enabled_stations.txt 基準） / all=すべて
+    aired: 放送状態のカンマ区切り集合（upcoming=未放送 / airing=放送中 / aired=放送済）。
+           デフォルトは全状態。含まれる状態の番組のみ返す。
+    """
+    states = {s for s in aired.split(",") if s}
+    all_states = states >= {"upcoming", "airing", "aired"}
+    conn = get_db()
+    like = f"%{q}%"
+    where = "(p.title LIKE ? OR p.pfm LIKE ? OR p.info LIKE ?)"
+    params = [like, like, like]
+
+    if scope == "enabled":
+        enabled = load_enabled()
+        if enabled:
+            ph = ",".join(["?"] * len(enabled))
+            where += f" AND p.station_id IN ({ph})"
+            params += list(enabled)
+
+    rows = conn.execute(
+        f"""SELECT p.prog_id, p.station_id, COALESCE(s.name, p.station_id),
+                   p.date, p.ftime, p.duration, p.title, p.pfm, p.url, p.info, p.image_url
+            FROM programs p LEFT JOIN stations s ON p.station_id = s.station_id
+            WHERE {where}
+            ORDER BY p.date DESC, p.ftime""",
+        params,
+    ).fetchall()
+    conn.close()
+
+    now = datetime.now()
+    programs = []
+    for r in rows:
+        if not all_states:
+            try:
+                start = datetime.strptime(f"{r[3]}{r[4]}", "%Y%m%d%H%M")
+            except ValueError:
+                continue
+            end = start + timedelta(minutes=r[5])
+            if now < start:
+                st = "upcoming"
+            elif now < end:
+                st = "airing"
+            else:
+                st = "aired"
+            if st not in states:
+                continue
+        programs.append({
+            "prog_id": r[0], "station_id": r[1], "station_name": r[2],
+            "date": r[3], "ftime": r[4], "duration": r[5], "title": r[6],
+            "pfm": r[7], "url": r[8], "info": r[9], "image_url": r[10],
+        })
+        if len(programs) >= 300:
+            break
+
+    return {"q": q, "scope": scope, "aired": sorted(states), "programs": programs}
+
+
 @app.get("/api/programs/{prog_id}")
 def get_program(prog_id: str):
     conn = get_db()

@@ -69,6 +69,8 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, sans-s
   border-bottom: 1px solid var(--border); cursor: pointer;
 }
 .tt-station-name:hover { background: var(--surface2); }
+/* 再生中の放送局名を明るい緑で強調 */
+.tt-station-name.playing .tt-station-id { color: #4ade80; }
 .tt-station-id { font-size: 11px; font-weight: 700; color: var(--accent); }
 .tt-station-fullname { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -148,6 +150,24 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, sans-s
 #card-modal.hidden { display: none; }
 #card-modal-inner { width: 100%; max-width: 480px; }
 
+/* ── Search panel ── */
+#panel-search { flex-direction: column; overflow: hidden; }
+#search-bar { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#search-input { flex: 1 1 200px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 9px 13px; color: var(--text); font-size: 14px; }
+#search-input:focus { outline: none; border-color: var(--accent); }
+.search-filter { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; color: var(--text); font-size: 13px; cursor: pointer; }
+.search-filter:focus { outline: none; border-color: var(--accent); }
+.search-aired { display: flex; align-items: center; gap: 12px; padding: 0 11px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; }
+.search-aired label { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text); cursor: pointer; white-space: nowrap; }
+.search-aired input { cursor: pointer; accent-color: var(--accent); }
+#search-btn { background: var(--accent); color: #fff; white-space: nowrap; }
+#search-btn:hover { opacity: .85; }
+#search-results { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+#search-results .prog-card { width: 100%; max-width: 600px; flex-shrink: 0; }
+.search-empty { color: var(--muted); margin-top: 40px; font-size: 13px; }
+.search-count { color: var(--muted); font-size: 12px; align-self: flex-start; max-width: 600px; width: 100%; margin: 0 auto; }
+mark { background: var(--accent); color: #fff; border-radius: 3px; padding: 0 2px; }
+
 /* ── Recordings panel ── */
 #panel-recordings { flex-direction: column; overflow-y: auto; padding: 16px; align-items: center; }
 #recordings-list { width: 100%; max-width: 600px; }
@@ -190,6 +210,7 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, sans-s
 
 <div id="tabs">
   <button class="tab active" data-tab="timetable">番組表</button>
+  <button class="tab" data-tab="search">検索</button>
   <button class="tab" data-tab="recordings">録音ファイル</button>
   <button class="tab" data-tab="schedules">録音予約一覧</button>
 </div>
@@ -210,6 +231,26 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, sans-s
 
 <div id="card-modal" class="hidden">
   <div id="card-modal-inner"></div>
+</div>
+
+<!-- Search -->
+<div class="tab-panel" id="panel-search">
+  <div id="search-bar">
+    <input type="text" id="search-input" placeholder="番組名・パーソナリティ・番組情報で検索…" autocomplete="off">
+    <select id="search-scope" class="search-filter">
+      <option value="enabled">聴取可能な放送局のみ</option>
+      <option value="all">すべての放送局</option>
+    </select>
+    <div id="search-aired" class="search-aired">
+      <label><input type="checkbox" value="aired" checked> 放送済</label>
+      <label><input type="checkbox" value="airing" checked> 放送中</label>
+      <label><input type="checkbox" value="upcoming" checked> 未放送</label>
+    </div>
+    <button class="btn" id="search-btn">🔍 検索</button>
+  </div>
+  <div id="search-results">
+    <div class="search-empty">キーワードを入力して検索してください</div>
+  </div>
 </div>
 
 <!-- Recordings -->
@@ -264,6 +305,59 @@ document.querySelectorAll('.tab').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + tab));
     if (tab === 'recordings') loadRecordings();
     if (tab === 'schedules') loadSchedules();
+    if (tab === 'search') document.getElementById('search-input').focus();
+  });
+});
+
+// ── Search ──
+
+async function doSearch() {
+  const q = document.getElementById('search-input').value.trim();
+  const results = document.getElementById('search-results');
+  if (!q) {
+    results.innerHTML = '<div class="search-empty">キーワードを入力して検索してください</div>';
+    return;
+  }
+  const scope = document.getElementById('search-scope').value;
+  const aired = [...document.querySelectorAll('#search-aired input:checked')]
+    .map(c => c.value).join(',');
+  if (!aired) {
+    results.innerHTML = '<div class="search-empty">放送状態を1つ以上選択してください</div>';
+    return;
+  }
+  results.innerHTML = '<div class="search-empty">検索中…</div>';
+  try {
+    const params = new URLSearchParams({ q, scope, aired });
+    const res = await fetch('/api/search?' + params);
+    const data = await res.json();
+    if (!data.programs.length) {
+      results.innerHTML = `<div class="search-empty">「${esc(q)}」に一致する番組は見つかりませんでした</div>`;
+      return;
+    }
+    results.innerHTML = '';
+    const count = document.createElement('div');
+    count.className = 'search-count';
+    count.textContent = `${data.programs.length} 件ヒット` + (data.programs.length >= 300 ? '（上限300件）' : '');
+    results.appendChild(count);
+    for (const p of data.programs) {
+      results.appendChild(createProgCard(p, { highlight: q }));
+    }
+  } catch (e) {
+    results.innerHTML = '<div class="search-empty">❌ 検索に失敗しました</div>';
+  }
+}
+
+document.getElementById('search-btn').addEventListener('click', doSearch);
+document.getElementById('search-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doSearch();
+});
+// 絞り込み条件を変えたら即再検索（キーワード入力済みのときのみ）
+document.getElementById('search-scope').addEventListener('change', () => {
+  if (document.getElementById('search-input').value.trim()) doSearch();
+});
+document.querySelectorAll('#search-aired input').forEach(c => {
+  c.addEventListener('change', () => {
+    if (document.getElementById('search-input').value.trim()) doSearch();
   });
 });
 
@@ -363,6 +457,7 @@ function renderRows() {
     // 放送局名セル（左カラム）
     const nameEl = document.createElement('div');
     nameEl.className = 'tt-station-name';
+    nameEl.dataset.stationId = st.station_id;
     nameEl.innerHTML = `<span class="tt-station-id">${esc(st.station_id)}</span><span class="tt-station-fullname">${esc(st.name)}</span>`;
     nameEl.addEventListener('click', () => {
       post('/api/play', { station_id: st.station_id }).then(() => updateNowPlaying());
@@ -390,10 +485,12 @@ function renderRows() {
       const block = document.createElement('div');
       block.className = 'tt-prog';
       block.dataset.progId = p.prog_id;
+      block.dataset.stationId = p.station_id;
       block.style.left = left + 'px';
       block.style.width = width + 'px';
       const progStart = new Date(`${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6,8)}T${p.ftime.slice(0,2)}:${p.ftime.slice(2,4)}:00`);
       const progEnd = new Date(progStart.getTime() + p.duration * 60000);
+      block.dataset.endTs = progEnd.getTime();
       const isPast = progEnd < now;
       if (isPast) block.classList.add('past');
       block.style.background = stationColor(p.station_id, isPast);
@@ -418,6 +515,14 @@ function updateNowLine() {
     + String(today.getMonth()+1).padStart(2,'0')
     + String(today.getDate()).padStart(2,'0');
 
+  // now-line の移動に合わせて、終了済み番組の色を都度再判定する
+  const nowTs = today.getTime();
+  for (const block of document.querySelectorAll('.tt-prog')) {
+    const isPast = Number(block.dataset.endTs) < nowTs;
+    block.classList.toggle('past', isPast);
+    block.style.background = stationColor(block.dataset.stationId, isPast);
+  }
+
   const line = document.getElementById('now-line');
   if (!line) return;
 
@@ -431,6 +536,14 @@ function updateNowLine() {
 
 function esc(str) {
   return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// 検索語をエスケープ後に <mark> で囲んでハイライト
+function hl(str, term) {
+  const safe = esc(str);
+  if (!term) return safe;
+  const safeTerm = esc(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return safe.replace(new RegExp('(' + safeTerm + ')', 'gi'), '<mark>$1</mark>');
 }
 
 // ── Program Card ──
@@ -449,19 +562,22 @@ function createProgCard(p, opts = {}) {
   if (progEnd < now) recordLabel = 'タイムフリー録音';
   else if (isFuture) recordLabel = 'スケジュール登録';
 
+  // 検索結果では opts.highlight に検索語が入り、表示テキストをハイライトする
+  const H = opts.highlight ? (s) => hl(s, opts.highlight) : esc;
+
   const card = document.createElement('div');
   card.className = 'prog-card';
   card.innerHTML = `
     <div class="prog-card-top">
       <div class="prog-card-info">
-        <div class="prog-card-station">${opts.badge ? `<span class="prog-card-badge ${opts.badge.cls}">${opts.badge.label}</span>` : ''}${esc(p.station_id)}　${esc(p.station_name || '')}</div>
-        <div class="prog-card-title">${esc(p.title)}</div>
+        <div class="prog-card-station">${opts.badge ? `<span class="prog-card-badge ${opts.badge.cls}">${opts.badge.label}</span>` : ''}${esc(p.station_id)}　${H(p.station_name || '')}</div>
+        <div class="prog-card-title">${H(p.title)}</div>
         <div class="prog-card-time">${fmtDate(date)}　${startH}〜${endH}　(${p.duration}分)</div>
-        ${p.pfm ? `<div class="prog-card-pfm">👤 ${esc(p.pfm)}</div>` : ''}
+        ${p.pfm ? `<div class="prog-card-pfm">👤 ${H(p.pfm)}</div>` : ''}
       </div>
       ${p.image_url ? `<div class="prog-card-artwork"><img src="${esc(p.image_url)}" alt="" onerror="this.parentElement.remove()"></div>` : ''}
     </div>
-    ${p.info ? `<div class="prog-card-desc">${esc(p.info)}</div>` : ''}
+    ${p.info ? `<div class="prog-card-desc">${H(p.info)}</div>` : ''}
     <div class="prog-card-actions">
       <div class="prog-card-btns">
         <button class="btn btn-record">${esc(recordLabel)}</button>
@@ -542,6 +658,11 @@ async function updateNowPlaying() {
     bar.classList.remove('active');
     dot.style.display = 'none';
     txt.textContent = '-- 停止中 --';
+  }
+  // 再生中の放送局名を強調表示
+  const playingId = data.playing ? data.station_id : null;
+  for (const el of document.querySelectorAll('.tt-station-name')) {
+    el.classList.toggle('playing', el.dataset.stationId === playingId);
   }
 }
 
