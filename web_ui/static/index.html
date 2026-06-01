@@ -301,10 +301,12 @@ function post(url, body) {
 document.querySelectorAll('.tab').forEach(btn => {
   btn.addEventListener('click', () => {
     const tab = btn.dataset.tab;
+    activeTab = tab;
     document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + tab));
-    if (tab === 'recordings') loadRecordings();
-    if (tab === 'schedules') loadSchedules();
+    // SSE で受信済みの最新状態から即描画（未受信なら次の push で埋まる）
+    if (tab === 'recordings') renderRecordings(latest.recordings);
+    if (tab === 'schedules') renderSchedules(latest.schedules);
     if (tab === 'search') document.getElementById('search-input').focus();
   });
 });
@@ -377,8 +379,7 @@ async function init() {
   if (state.dateIdx < 0) state.dateIdx = 0;
 
   await loadDate();
-  updateNowPlaying();
-  setInterval(updateNowPlaying, 30000);
+  connectEvents();
   setInterval(updateNowLine, 60000);
 }
 
@@ -423,6 +424,9 @@ function renderTimetable() {
   renderTimeHeader();
   renderRows();
   updateNowLine();
+  // 再描画で放送局名セルを作り直すと .playing が消えるので、
+  // 受信済みの再生状態から緑ハイライトを貼り直す（SSE は変化時しか来ないため）
+  applyNowPlaying(latest.now_playing);
   // 縦スクロールを左カラムと同期
   const right = document.getElementById('tt-right');
   right.onscroll = () => {
@@ -460,7 +464,7 @@ function renderRows() {
     nameEl.dataset.stationId = st.station_id;
     nameEl.innerHTML = `<span class="tt-station-id">${esc(st.station_id)}</span><span class="tt-station-fullname">${esc(st.name)}</span>`;
     nameEl.addEventListener('click', () => {
-      post('/api/play', { station_id: st.station_id }).then(() => updateNowPlaying());
+      post('/api/play', { station_id: st.station_id });  // 状態反映は SSE 経由
     });
     namesCol.appendChild(nameEl);
 
@@ -608,7 +612,7 @@ function createProgCard(p, opts = {}) {
       } catch(e) { statusEl.textContent = '❌ エラー'; }
     });
     card.querySelector('.btn-play').addEventListener('click', () => {
-      post('/api/play-program', { prog_id: p.prog_id }).then(() => updateNowPlaying());
+      post('/api/play-program', { prog_id: p.prog_id });  // 状態反映は SSE 経由
       closeCardModal();
     });
   }
@@ -642,11 +646,29 @@ document.addEventListener('keydown', e => {
 
 function selectProgram(p) { showCardModal(p); }
 
+// ── Server-pushed state (SSE) ──
+// サーバ側の共有状態（再生中・録音ファイル・予約）を全ブラウザで同期する。
+// 30 秒ポーリングやタブ依存ロードの代わりに、サーバの変化を即受信して再描画する。
+
+let activeTab = 'timetable';
+let latest = { now_playing: null, recordings: null, schedules: null };
+
+function connectEvents() {
+  const es = new EventSource('/api/events');
+  es.onmessage = (e) => {
+    const s = JSON.parse(e.data);
+    latest = s;
+    applyNowPlaying(s.now_playing);
+    if (activeTab === 'recordings') renderRecordings(s.recordings);
+    if (activeTab === 'schedules') renderSchedules(s.schedules);
+  };
+  // 切断時（再起動・ネットワーク断）は EventSource が自動で再接続する
+}
+
 // ── Now playing ──
 
-async function updateNowPlaying() {
-  const res = await fetch('/api/now-playing');
-  const data = await res.json();
+function applyNowPlaying(data) {
+  if (!data) return;
   const bar = document.getElementById('now-playing-bar');
   const dot = document.getElementById('np-dot');
   const txt = document.getElementById('np-text');
@@ -666,9 +688,8 @@ async function updateNowPlaying() {
   }
 }
 
-document.getElementById('stop-btn').addEventListener('click', async () => {
-  await post('/api/stop', {});
-  updateNowPlaying();
+document.getElementById('stop-btn').addEventListener('click', () => {
+  post('/api/stop', {});  // 状態反映は SSE 経由
 });
 
 // ── Recordings ──
@@ -686,25 +707,24 @@ function makeRecordingActionsEl(rec) {
   el.querySelector('.btn-dl').addEventListener('click', () => {
     window.location = `/api/recordings/${encodeURIComponent(rec.filename)}`;
   });
-  el.querySelector('.btn-del').addEventListener('click', async () => {
+  el.querySelector('.btn-del').addEventListener('click', () => {
     if (!confirm(`削除しますか？\n${rec.filename}`)) return;
-    await fetch(`/api/recordings/${encodeURIComponent(rec.filename)}`, { method: 'DELETE' });
-    loadRecordings();
+    fetch(`/api/recordings/${encodeURIComponent(rec.filename)}`, { method: 'DELETE' });
+    // 一覧の更新は SSE 経由
   });
   return el;
 }
 
-async function loadRecordings() {
-  const res = await fetch('/api/recordings');
-  const data = await res.json();
+function renderRecordings(recordings) {
+  if (recordings == null) return;  // SSE 未受信
   const list = document.getElementById('recordings-list');
-  if (!data.recordings.length) {
+  if (!recordings.length) {
     list.innerHTML = '<div class="empty-msg">録音ファイルがありません</div>';
     return;
   }
 
   list.innerHTML = '';
-  for (const rec of data.recordings) {
+  for (const rec of recordings) {
     const actionsEl = makeRecordingActionsEl(rec);
     let card;
     if (rec.prog) {
@@ -731,23 +751,21 @@ function makeCancelActionsEl(jobId) {
   const el = document.createElement('div');
   el.className = 'prog-card-actions';
   el.innerHTML = '<div class="prog-card-btns"><button class="btn btn-cancel-sched" style="flex:1">取り消し</button></div>';
-  el.querySelector('.btn-cancel-sched').addEventListener('click', async () => {
+  el.querySelector('.btn-cancel-sched').addEventListener('click', () => {
     if (!confirm('このスケジュールを取り消しますか？')) return;
-    await fetch(`/api/schedules/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
-    loadSchedules();
+    fetch(`/api/schedules/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+    // 一覧の更新は SSE 経由
   });
   return el;
 }
 
-async function loadSchedules() {
-  const res = await fetch('/api/schedules');
-  const data = await res.json();
+function renderSchedules(schedules) {
+  if (schedules == null) return;  // SSE 未受信
   const list = document.getElementById('schedules-list');
-  if (data.error) { list.innerHTML = `<div class="empty-msg">⚠ ${esc(data.error)}</div>`; return; }
-  if (!data.schedules.length) { list.innerHTML = '<div class="empty-msg">スケジュールはありません</div>'; return; }
+  if (!schedules.length) { list.innerHTML = '<div class="empty-msg">スケジュールはありません</div>'; return; }
 
   list.innerHTML = '';
-  for (const s of data.schedules) {
+  for (const s of schedules) {
     const actionsEl = makeCancelActionsEl(s.job_id);
     let card;
     if (s.prog) {
