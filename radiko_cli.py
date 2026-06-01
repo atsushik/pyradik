@@ -55,6 +55,24 @@ def fmt_duration(total_secs):
     if s: parts.append(f"{s}秒")
     return "".join(parts) or "0秒"
 
+def fmt_size(n):
+    """バイト数を人間可読な単位に整形する。"""
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1024
+
+# 録音ファイル名 {局ID}_{日付8桁}_{開始時刻4桁}[_{タイトル}].m4a
+RECORDING_RE = re.compile(r"^(?P<sid>[^_]+)_(?P<date>\d{8})_(?P<ftime>\d{4})(?:_.*)?\.m4a$", re.IGNORECASE)
+
+def parse_recording_filename(path):
+    """録音ファイル名から (station_id, date, ftime) を取り出す。形式不一致なら None。"""
+    m = RECORDING_RE.match(Path(path).name)
+    if not m:
+        return None
+    return m.group("sid"), m.group("date"), m.group("ftime")
+
 def get_program_info_at_time(station_id, date, ftime):
     """DB から station_id + date + ftime に一致する (url, title, image_url) を返す"""
     conn = sqlite3.connect(DB_PATH)
@@ -746,15 +764,30 @@ def cancel_schedule(job_id):
 
 @cli.command("embed-art")
 @click.argument("audio_file")
-@click.argument("station_id")
-@click.argument("date")
-@click.argument("ftime")
+@click.argument("station_id", required=False)
+@click.argument("date", required=False)
+@click.argument("ftime", required=False)
 def embed_art(audio_file, station_id, date, ftime):
     """録音ファイルに番組のカバーアートを埋め込む
 
-    例: embed-art YFM_20260531_0800.m4a YFM 20260531 0800
+    STATION_ID / DATE / FTIME を省略するとファイル名から自動判別する
+    （{局ID}_{日付}_{開始時刻}_... 形式）。
+
+    例: embed-art YFM_20260531_0800_朝の番組.m4a
+    例: embed-art recording.m4a YFM 20260531 0800
     """
     ensure_tables_exist()
+    if not (station_id and date and ftime):
+        parsed = parse_recording_filename(audio_file)
+        if not parsed:
+            console.print(
+                f"[red]❌ ファイル名から局ID/日付/時刻を判別できません: {Path(audio_file).name}[/red]\n"
+                "[dim]STATION_ID DATE FTIME を引数で指定してください[/dim]"
+            )
+            return
+        station_id, date, ftime = parsed
+        console.print(f"[dim]ファイル名から判別: {station_id} {date} {ftime}[/dim]")
+
     info = get_program_info_at_time(station_id, date, ftime)
     if not info:
         console.print(f"[yellow]⚠ {station_id} {date} {ftime} に該当する番組が DB に見つかりません[/yellow]")
@@ -776,6 +809,50 @@ def embed_art(audio_file, station_id, date, ftime):
         console.print(f"[green]✅ カバーアートを埋め込みました: {audio_file}[/green]")
     else:
         console.print("[red]❌ カバーアートの埋め込みに失敗しました[/red]")
+
+@cli.command("list-recordings")
+@click.option("--dir", "directory", default=".", show_default=True, help="走査するディレクトリ")
+def list_recordings(directory):
+    """ディレクトリ内の録音ファイル（*.m4a）を一覧表示
+
+    表示されるファイル名・局ID・日付・時刻はそのまま embed-art に渡せます。
+    """
+    ensure_tables_exist()
+    base = Path(directory)
+    files = sorted(base.glob("*.m4a"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not files:
+        console.print(f"[blue]📭 {base} に録音ファイル(*.m4a)は見つかりませんでした[/blue]")
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    table = Table(title=f"🎙 録音ファイル一覧（{base}）", show_lines=False)
+    table.add_column("ファイル名", style="bold", overflow="fold")
+    table.add_column("サイズ", style="cyan", justify="right")
+    table.add_column("局ID", style="dim")
+    table.add_column("日付", style="green")
+    table.add_column("開始", style="green")
+    table.add_column("番組名", style="magenta")
+
+    for f in files:
+        size = fmt_size(f.stat().st_size)
+        parsed = parse_recording_filename(f.name)
+        if not parsed:
+            table.add_row(f.name, size, "-", "-", "-", "[dim]（名前解析不可）[/dim]")
+            continue
+        sid, date, ftime = parsed
+        cur.execute(
+            """SELECT p.title FROM programs p
+               WHERE p.station_id = ? AND p.date = ? AND p.ftime = ? LIMIT 1""",
+            (sid, date, ftime),
+        )
+        row = cur.fetchone()
+        title = row[0] if row else "[dim]（DB未登録）[/dim]"
+        table.add_row(f.name, size, sid, f"{date[:4]}/{date[4:6]}/{date[6:]}", f"{ftime[:2]}:{ftime[2:]}", title)
+
+    conn.close()
+    console.print(table)
 
 @cli.command("schedule-record")
 @click.argument("station_id")
