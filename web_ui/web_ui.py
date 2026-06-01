@@ -1,12 +1,16 @@
+import asyncio
+import hashlib
+import json
 import re
 import subprocess
 import sys
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import sqlite3
 from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -20,8 +24,21 @@ RECORDINGS_DIR = PROJECT_DIR
 
 sys.path.insert(0, str(PROJECT_DIR))
 import radiko_recorder
+import radiko_audio
 
-app = FastAPI(title="Radiko Web UI")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 起動時に状態 poll ループを開始し、全 SSE クライアントへ変化を配信する
+    global _loop, _wake
+    _loop = asyncio.get_running_loop()
+    _wake = asyncio.Event()
+    task = asyncio.create_task(_broadcast_loop())
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="Radiko Web UI", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
 
 
@@ -39,7 +56,12 @@ def load_enabled():
 
 @app.get("/")
 def root():
-    return FileResponse(APP_DIR / "static" / "index.html")
+    # no-cache: 更新時にブラウザが古い index.html を握り続けないようにする
+    # （毎回サーバへ検証に来るが、再生状態等の本体は SSE 経由なので負荷は小さい）
+    return FileResponse(
+        APP_DIR / "static" / "index.html",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/api/dates")
@@ -227,6 +249,7 @@ def record_program(req: RecordRequest, bg: BackgroundTasks):
     if scheduled_end < now:
         from_time = f"{date}{ftime}00"
         bg.add_task(run_record, "timefree", from_time)
+        trigger_refresh()
         return {"status": "started", "type": "timefree", "output": output}
 
     if scheduled_start > now:
@@ -243,11 +266,13 @@ def record_program(req: RecordRequest, bg: BackgroundTasks):
         )
         if result.returncode != 0:
             raise HTTPException(500, result.stderr.strip())
+        trigger_refresh()
         return {"status": "scheduled", "type": "future", "scheduled": scheduled_start.isoformat()}
 
     # currently airing
     remaining = max(1, int((scheduled_end - now).total_seconds() / 60) + 1)
     bg.add_task(run_record, "live", remaining)
+    trigger_refresh()
     return {"status": "started", "type": "live", "output": output}
 
 
@@ -262,6 +287,7 @@ def play_station(req: PlayRequest):
         ["python", str(RECORDER_PATH), "play", req.station_id, "--live"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
     )
+    trigger_refresh()
     return {"status": "playing", "station_id": req.station_id}
 
 
@@ -297,31 +323,62 @@ def play_program(req: PlayProgramRequest):
         ["python", str(RECORDER_PATH), "play", station_id, from_time, str(duration)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
     )
+    trigger_refresh()
     return {"status": "playing", "type": "timefree", "station_id": station_id}
 
 
 @app.post("/api/stop")
 def stop_playback():
     r = subprocess.run(["pkill", "ffplay"], capture_output=True)
+    trigger_refresh()
     return {"status": "stopped" if r.returncode == 0 else "not_playing"}
+
+
+def _now_playing_data():
+    result = subprocess.run(["ps", "ax"], capture_output=True, text=True)
+    base = {"device": radiko_audio.current_device(), "volume": radiko_audio.get_volume()}
+    for line in result.stdout.splitlines():
+        m = re.search(r'radiko_recorder\.py\s+play\s+(\S+)', line)
+        if m:
+            return {"playing": True, "station_id": m.group(1), **base}
+    return {"playing": False, "station_id": None, **base}
 
 
 @app.get("/api/now-playing")
 def now_playing():
-    result = subprocess.run(["ps", "ax"], capture_output=True, text=True)
-    for line in result.stdout.splitlines():
-        m = re.search(r'radiko_recorder\.py\s+play\s+(\S+)', line)
-        if m:
-            return {"playing": True, "station_id": m.group(1)}
-    return {"playing": False, "station_id": None}
+    return _now_playing_data()
 
 
-@app.get("/api/schedules")
-def list_schedules():
+class VolumeRequest(BaseModel):
+    level: float
+
+
+@app.get("/api/volume")
+def get_volume():
+    # wpctl 前提（Raspberry Pi OS / PipeWire 想定）。他環境では null になることがある。
+    return {
+        "available": radiko_audio.available(),
+        "volume": radiko_audio.get_volume(),
+        "muted": radiko_audio.is_muted(),
+        "device": radiko_audio.current_device(),
+    }
+
+
+@app.post("/api/volume")
+def set_volume(req: VolumeRequest):
+    if not radiko_audio.available():
+        raise HTTPException(503, "wpctl unavailable (Raspberry Pi OS / PipeWire only)")
+    if not radiko_audio.set_volume(req.level):
+        raise HTTPException(500, "failed to set volume")
+    return {"status": "ok", "volume": radiko_audio.get_volume()}
+
+
+def _schedules_data():
+    """at ジョブ一覧を返す。at コマンドが無い場合は None。"""
     try:
         atq = subprocess.run(["atq"], capture_output=True, text=True)
     except FileNotFoundError:
-        return {"schedules": [], "error": "at not installed"}
+        return None
     jobs = []
     for line in atq.stdout.splitlines():
         parts = line.split()
@@ -373,6 +430,14 @@ def list_schedules():
                     "pfm": r[7], "url": r[8], "info": r[9], "image_url": r[10],
                 }
     conn.close()
+    return jobs
+
+
+@app.get("/api/schedules")
+def list_schedules():
+    jobs = _schedules_data()
+    if jobs is None:
+        return {"schedules": [], "error": "at not installed"}
     return {"schedules": jobs}
 
 
@@ -381,11 +446,11 @@ def cancel_schedule(job_id: str):
     r = subprocess.run(["atrm", job_id], capture_output=True, text=True)
     if r.returncode != 0:
         raise HTTPException(400, r.stderr.strip())
+    trigger_refresh()
     return {"status": "cancelled", "job_id": job_id}
 
 
-@app.get("/api/recordings")
-def list_recordings():
+def _recordings_data():
     ps = subprocess.run(["ps", "ax"], capture_output=True, text=True)
     active = set()
     for line in ps.stdout.splitlines():
@@ -417,7 +482,12 @@ def list_recordings():
                 }
         recordings.append(entry)
     conn.close()
-    return {"recordings": recordings}
+    return recordings
+
+
+@app.get("/api/recordings")
+def list_recordings():
+    return {"recordings": _recordings_data()}
 
 
 @app.delete("/api/recordings/{filename}")
@@ -426,6 +496,7 @@ def delete_recording(filename: str):
     if not path.exists() or not str(path.resolve()).startswith(str(RECORDINGS_DIR.resolve())):
         raise HTTPException(404, "Not found")
     path.unlink()
+    trigger_refresh()
     return {"status": "deleted"}
 
 
@@ -435,6 +506,79 @@ def download_recording(filename: str):
     if not path.exists() or not str(path.resolve()).startswith(str(RECORDINGS_DIR.resolve())):
         raise HTTPException(404, "Not found")
     return FileResponse(str(path), media_type="audio/x-m4a", filename=filename)
+
+
+# ── SSE: サーバ側の共有状態（再生・録音・予約）を全クライアントへ push ──
+#
+# 状態の実体は OS 側（ffplay/ffmpeg プロセス・ディスク上の *.m4a・at ジョブ）にあり、
+# HTTP リクエストを伴わずに変化する（録音終了・予約発火など）。そのため、サーバの
+# poll ループで一定間隔ごとにスナップショットを取り、変化した時だけ配信する。
+# 各 mutation は trigger_refresh() で poll を即時起床させ、反映を素早くする。
+
+_subscribers: "set[asyncio.Queue]" = set()
+_loop: "asyncio.AbstractEventLoop | None" = None
+_wake: "asyncio.Event | None" = None
+
+POLL_INTERVAL = 2.0       # 状態スナップショットの最大間隔（秒）
+KEEPALIVE_INTERVAL = 15.0  # SSE コメント行で接続維持する間隔（秒）
+
+
+def build_snapshot():
+    """配信する共有状態のスナップショット。subprocess を含むので別スレッドで呼ぶ。"""
+    return {
+        "now_playing": _now_playing_data(),
+        "recordings": _recordings_data(),
+        "schedules": _schedules_data() or [],
+    }
+
+
+def trigger_refresh():
+    """mutation 後に poll ループを即時起床させる（同期エンドポイントから安全に呼べる）。"""
+    if _loop and _wake:
+        _loop.call_soon_threadsafe(_wake.set)
+
+
+async def _broadcast_loop():
+    last_hash = None
+    while True:
+        snap = await asyncio.to_thread(build_snapshot)
+        h = hashlib.md5(json.dumps(snap, sort_keys=True, default=str).encode()).hexdigest()
+        if h != last_hash:
+            last_hash = h
+            for q in list(_subscribers):
+                q.put_nowait(snap)
+        try:
+            await asyncio.wait_for(_wake.wait(), timeout=POLL_INTERVAL)
+        except asyncio.TimeoutError:
+            pass
+        else:
+            _wake.clear()
+
+
+@app.get("/api/events")
+async def events():
+    q: "asyncio.Queue" = asyncio.Queue()
+    _subscribers.add(q)
+
+    async def gen():
+        try:
+            # 接続直後に現在の状態を 1 度流す
+            snap = await asyncio.to_thread(build_snapshot)
+            yield f"data: {json.dumps(snap, default=str)}\n\n"
+            while True:
+                try:
+                    snap = await asyncio.wait_for(q.get(), timeout=KEEPALIVE_INTERVAL)
+                    yield f"data: {json.dumps(snap, default=str)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+        finally:
+            _subscribers.discard(q)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 if __name__ == "__main__":

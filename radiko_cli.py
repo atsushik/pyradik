@@ -633,10 +633,11 @@ def now_playing():
                 table = Table(title=f"📻 再生中の放送局: {station_id}")
                 table.add_column("局名", style="cyan")
                 table.add_column("開始", style="green")
+                table.add_column("終了", style="green")
                 table.add_column("番組名", style="bold")
                 table.add_column("パーソナリティ", style="magenta")
                 table.add_column("URL", style="blue", overflow="fold")
-                table.add_row(row[5], f"{row[0][:2]}:{row[0][2:]}", row[2], row[3], row[4] or "-")
+                table.add_row(row[5], f"{row[0][:2]}:{row[0][2:]}", f"{end // 60:02d}:{end % 60:02d}", row[2], row[3], row[4] or "-")
                 console.print(table)
                 return
 
@@ -645,6 +646,40 @@ def now_playing():
 
     except Exception as e:
         console.print(f"[red]❌ エラー: {e}[/red]")
+
+@cli.command("volume")
+@click.argument("level", required=False)
+def volume(level):
+    """音量の取得・設定（引数なしで現在値、0.0〜1.0 で設定）。
+
+    PipeWire の wpctl を使用。Raspberry Pi OS 想定で実装しており、
+    他環境（PulseAudio のみ / ALSA のみ等）では動作しないことがあります。
+    """
+    import radiko_audio
+    if not radiko_audio.available():
+        console.print("[red]❌ wpctl が見つかりません（Raspberry Pi OS / PipeWire 想定の機能です）[/red]")
+        return
+
+    if level is None:
+        vol = radiko_audio.get_volume()
+        dev = radiko_audio.current_device()
+        muted = " [yellow](ミュート)[/yellow]" if radiko_audio.is_muted() else ""
+        if vol is None:
+            console.print("[yellow]⚠ 音量を取得できませんでした[/yellow]")
+            return
+        console.print(f"[cyan]🔊 出力先:[/cyan] {dev or '不明'}")
+        console.print(f"[cyan]🔈 音量:[/cyan] {vol:.2f}{muted}")
+        return
+
+    try:
+        target = float(level)
+    except ValueError:
+        console.print(f"[red]❌ 音量は 0.0〜1.0 の数値で指定してください: {level}[/red]")
+        return
+    if radiko_audio.set_volume(target):
+        console.print(f"[green]🔈 音量を {max(0.0, min(1.0, target)):.2f} に設定しました[/green]")
+    else:
+        console.print("[red]❌ 音量の設定に失敗しました[/red]")
 
 @cli.command("search")
 @click.argument("keyword")

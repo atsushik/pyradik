@@ -139,6 +139,7 @@ $ python radiko_cli.py stop                       # 再生停止
 | `list-schedules` / `cancel-schedule` | `at` 予約の一覧・取り消し |
 | `list-recordings` | ディレクトリ内の録音ファイル（*.m4a）を一覧表示（`--dir` で指定、既定はカレント） |
 | `play` / `stop` / `now-playing` | ライブ再生・停止・再生中番組の表示 |
+| `volume [LEVEL]` | 音量の取得（引数なし）／設定（`0.0`〜`1.0`）と出力デバイスの表示 |
 | `embed-art` | 録音ファイルに番組のカバーアートを埋め込む（局ID/日付/時刻はファイル名から自動判別） |
 | `init-db` | DB（stations / programs）を初期化 |
 
@@ -208,6 +209,7 @@ $ ./radi.sh -t lisradi -s 30058 -d 30 -o "/hoge/foo.m4a"
 
 - 録音手法は対象サイトの仕様変更等で利用できなくなる可能性があります。
 - radiko のタイムフリーは放送後 7 日以内が対象です。
+- 音量・出力デバイスの取得／設定（CLI の `volume`、Web UI の音量操作）は PipeWire の `wpctl` に委譲しています。**Raspberry Pi OS（PipeWire 構成）を想定した実装**のため、PulseAudio のみ・ALSA のみといった他環境では動作しないことがあります。
 
 
 ## 作った人
