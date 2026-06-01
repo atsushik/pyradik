@@ -1,1 +1,11 @@
-web_ui/__pycache__/
+# Python
+__pycache__/
+*.py[cod]
+
+# 生成される番組DB・データ
+radiko.db
+stations.csv
+enabled_stations.txt
+
+# 録音ファイル
+*.m4a
