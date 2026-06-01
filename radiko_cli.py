@@ -21,12 +21,14 @@ from rich.panel import Panel
 from rich.align import Align
 from rich.layout import Layout
 
+import radiko_recorder
+
 DB_PATH = "radiko.db"
 ENABLED_STATIONS_PATH = "enabled_stations.txt"
 RX2_PATH = "/home/atsushi/git/radish/rx2"
 
 MAX_WORKERS = 3
-RADISH_PATH = str(Path(__file__).parent / "radish-play.sh")
+RECORDER_PATH = str(Path(__file__).parent / "radiko_recorder.py")
 
 def parse_offset(s):
     """'1m', '90s', '2m30s' → total seconds as int"""
@@ -54,16 +56,38 @@ def fmt_duration(total_secs):
     return "".join(parts) or "0秒"
 
 def get_program_info_at_time(station_id, date, ftime):
-    """DB から station_id + date + ftime に一致する (url, title) を返す"""
+    """DB から station_id + date + ftime に一致する (url, title, image_url) を返す"""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
-        "SELECT url, title FROM programs WHERE station_id = ? AND date = ? AND ftime = ? LIMIT 1",
+        "SELECT url, title, image_url FROM programs WHERE station_id = ? AND date = ? AND ftime = ? LIMIT 1",
         (station_id, date, ftime),
     )
     row = cur.fetchone()
     conn.close()
     return row
+
+def fetch_image_url(image_url):
+    """CDN 直接 URL から画像を取得して (image_bytes, ext) を返す。失敗時は None"""
+    ext = image_url.rsplit(".", 1)[-1].split("?")[0].lower()
+    if ext not in ("jpg", "jpeg", "png", "webp"):
+        ext = "jpg"
+    try:
+        req = urllib_request.Request(image_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib_request.urlopen(req, timeout=10) as resp:
+            return resp.read(), ext
+    except Exception:
+        return None
+
+def fetch_art(image_url, site_url):
+    """image_url (CDN直接) → site_url の og:image の順で画像取得を試みる"""
+    if image_url:
+        result = fetch_image_url(image_url)
+        if result:
+            return result
+    if site_url:
+        return fetch_og_image(site_url)
+    return None
 
 def fetch_og_image(url):
     """URL の og:image を取得して (image_bytes, ext) を返す。失敗時は None"""
@@ -180,57 +204,6 @@ def load_enabled_stations(filepath):
     with open(filepath, "r", encoding="utf-8") as f:
         return {line.strip() for line in f if line.strip()}
 
-def update_stations_csv():
-    """radish-play.sh -l を使って radiko 放送局一覧を stations.csv に保存"""
-    try:
-        result = subprocess.run(
-            ["bash", "/home/atsushi/git/radish/radish-play.sh", "-l"],
-            capture_output=True, text=True, check=True
-        )
-        with open("stations.csv", "w", encoding="utf-8") as f:
-            for line in result.stdout.splitlines():
-                if line.startswith("radiko,"):
-                    f.write(line + "\n")
-        console.print("[green]✅ stations.csv を更新しました（radiko局のみ）[/green]")
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]❌ radish-play.sh -l 実行エラー: {e}[/red]")
-
-def load_station_ids():
-    """stations.csv から radiko の放送局IDと局名を取得"""
-    stations = []
-    if not Path("stations.csv").exists():
-        console.print("[red]❌ stations.csv が存在しません[/red]")
-        return stations
-    with open("stations.csv", "r", encoding="utf-8") as f:
-        for line in f:
-            parts = line.strip().split(",", maxsplit=2)
-            if len(parts) == 3 and parts[0] == "radiko":
-                station_id, name = parts[1], parts[2]
-                stations.append((station_id, name))
-    return stations
-
-def test_station(station_id, timeout=6):
-    """403 が返ってこなければ受信可能と判定"""
-    try:
-        proc = subprocess.Popen(
-            ["bash", "/home/atsushi/git/radish/radish-play.sh", "-t", "radiko", "-s", station_id, "-m", "record", "-d", "60", "-o", "tmp"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE
-        )
-        start = time.time()
-        while True:
-            if proc.poll() is not None:
-                _, err = proc.communicate()
-                return b"403" not in err
-            if time.time() - start > timeout:
-                proc.terminate()
-                return True  # 403が来なかったのでOKと判断
-            time.sleep(0.2)
-    except Exception as e:
-        console.print(f"[red]❌ エラー ({station_id}): {e}[/red]")
-        return False
-
 def render_layout():
     layout = Layout()
     layout.split(
@@ -247,8 +220,8 @@ def render_layout():
     return layout
 
 def detect_enabled_stations_parallel():
-    update_stations_csv()
-    station_list = load_station_ids()
+    client = radiko_recorder.RadikoClient()
+    station_list = radiko_recorder.list_stations()
     enabled = []
 
     progress = Progress(
@@ -289,7 +262,7 @@ def detect_enabled_stations_parallel():
                 nonlocal current_checking_text
                 try:
                     sid, name = next(station_iter)
-                    f = executor.submit(test_station, sid)
+                    f = executor.submit(client.station_available, sid)
                     futures[f] = (sid, name)
                     current_checking_text = f"{sid} - {name}"
                     live.update(render_layout())
@@ -506,44 +479,32 @@ def update_db():
 
 def _update_stations_inner():
     try:
-        result = subprocess.run(
-            ["bash", "/home/atsushi/git/radish/radish-play.sh", "-l"],
-            capture_output=True, text=True, check=True
-        )
-        lines = result.stdout.strip().splitlines()
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]❌ radish-play.sh 実行エラー: {e}[/red]")
+        stations = radiko_recorder.list_stations()
+    except Exception as e:
+        console.print(f"[red]❌ 放送局一覧の取得エラー: {e}[/red]")
         return
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     inserted = 0
-    skipped = 0
 
-    for line in lines:
-        parts = line.strip().split(",", maxsplit=2)
-        if len(parts) != 3:
-            skipped += 1
-            continue
-        service, station_id, name = parts
-        if service != "radiko":
-            continue
+    for station_id, name in stations:
         try:
             cur.execute("""
                 INSERT OR REPLACE INTO stations (service, station_id, name)
                 VALUES (?, ?, ?)
-            """, (service, station_id, name))
+            """, ("radiko", station_id, name))
             inserted += 1
         except Exception as e:
-            console.print(f"[red]❌ エラー: {e} 行: {line}[/red]")
+            console.print(f"[red]❌ エラー: {e} 局: {station_id}[/red]")
 
     conn.commit()
     conn.close()
-    console.print(f"[green]✅ {inserted} 局を登録（{skipped} 行スキップ）[/green]")
+    console.print(f"[green]✅ {inserted} 局を登録[/green]")
 
 @cli.command("update-stations")
 def update_stations():
-    """[blue]radish-play.sh -l[/blue] から放送局一覧を更新"""
+    """radiko API から放送局一覧を更新"""
     ensure_tables_exist()
     _update_stations_inner()
 
@@ -599,11 +560,12 @@ def init_db(force):
 def play_station(station_id):
     """指定した放送局をバックグラウンドで再生（例: play YFM）"""
     ensure_tables_exist()
+    subprocess.run(["pkill", "ffplay"], check=False)
     console.print(f"[cyan]🎵 再生をバックグラウンドで開始: {station_id}[/cyan]")
 
     try:
         subprocess.Popen(
-            ["bash", "/home/atsushi/git/radish/radish-play.sh", "-t", "radiko", "-s", station_id, "-m", "play"],
+            ["python", RECORDER_PATH, "play", station_id, "--live"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True
@@ -629,18 +591,14 @@ def now_playing():
     """現在再生中の放送局の番組情報を表示"""
     ensure_tables_exist()
     try:
-        # プロセスから `-s STATION` を含む行を探す
+        # radiko_recorder.py の play プロセスから放送局IDを探す
         result = subprocess.run(["ps", "ax"], capture_output=True, text=True)
         station_id = None
         for line in result.stdout.splitlines():
-            if "radish-play.sh" in line and "-m play" in line and "-s" in line:
-                parts = line.strip().split()
-                for i, part in enumerate(parts):
-                    if part == "-s" and i + 1 < len(parts):
-                        station_id = parts[i + 1]
-                        break
-                if station_id:
-                    break
+            m = re.search(r'radiko_recorder\.py\s+play\s+(\S+)', line)
+            if m:
+                station_id = m.group(1)
+                break
 
         if not station_id:
             console.print("[blue]ℹ️ 現在再生中の放送局は見つかりませんでした[/blue]")
@@ -745,7 +703,7 @@ def list_schedules():
             continue
         job_id = parts[0]
         detail = subprocess.run(["at", "-c", job_id], capture_output=True, text=True)
-        cmd_lines = [l for l in detail.stdout.splitlines() if "radish-play.sh" in l]
+        cmd_lines = [l for l in detail.stdout.splitlines() if "radiko_recorder.py" in l]
         if not cmd_lines:
             continue
         cmd = cmd_lines[0].strip()
@@ -759,12 +717,15 @@ def list_schedules():
         except ValueError:
             scheduled_label = scheduled_str
 
-        # コマンドから -s, -d, -o を抽出
-        def extract_opt(flag):
-            m = re.search(rf'{flag}\s+(\S+)', cmd)
-            return m.group(1) if m else "-"
+        # コマンド: python ... radiko_recorder.py record {sid} --live {dur} -o {out}
+        sm = re.search(r'radiko_recorder\.py\s+record\s+(\S+)', cmd)
+        dm = re.search(r'--live\s+(\S+)', cmd)
+        om = re.search(r'-o\s+(\S+)', cmd)
+        station = sm.group(1) if sm else "-"
+        dur = dm.group(1) if dm else "-"
+        out = om.group(1) if om else "-"
 
-        jobs.append((job_id, scheduled_label, extract_opt("-s"), extract_opt("-d"), extract_opt("-o")))
+        jobs.append((job_id, scheduled_label, station, dur, out))
 
     if not jobs:
         console.print("[blue]ℹ️ 録音スケジュールは登録されていません[/blue]")
@@ -808,15 +769,15 @@ def embed_art(audio_file, station_id, date, ftime):
     if not info:
         console.print(f"[yellow]⚠ {station_id} {date} {ftime} に該当する番組が DB に見つかりません[/yellow]")
         return
-    url, title = info
-    if not url:
-        console.print(f"[yellow]⚠ 番組 '{title}' の URL が登録されていません[/yellow]")
+    url, title, image_url = info
+    if not url and not image_url:
+        console.print(f"[yellow]⚠ 番組 '{title}' の画像情報が登録されていません[/yellow]")
         return
 
-    console.print(f"[blue]🖼 og:image を取得中: {url}[/blue]")
-    result = fetch_og_image(url)
+    console.print(f"[blue]🖼 アートワークを取得中...[/blue]")
+    result = fetch_art(image_url, url)
     if not result:
-        console.print("[yellow]⚠ og:image が見つかりませんでした[/yellow]")
+        console.print("[yellow]⚠ アートワーク画像が見つかりませんでした[/yellow]")
         return
     image_bytes, ext = result
 
@@ -859,8 +820,7 @@ def schedule_record(station_id, date, ftime, duration, start_offset_str, end_off
 
     cli_path = str(Path(__file__).resolve())
     radish_cmd = (
-        f"bash {RADISH_PATH} -t radiko -s {station_id}"
-        f" -d {actual_duration_mins} -o {output} -m record"
+        f"python {RECORDER_PATH} record {station_id} --live {actual_duration_mins} -o {output}"
     )
     if with_art:
         radish_cmd += (
@@ -930,11 +890,12 @@ def timefree_record(station_id, date, ftime, duration, output, with_art):
 
     console.print(f"[cyan]📻 タイムフリー録音開始: {station_id} {date[:4]}/{date[4:6]}/{date[6:]} {ftime[:2]}:{ftime[2:]} ({duration}分)[/cyan]")
 
-    result = subprocess.run(
-        ["bash", RADISH_PATH, "-t", "radiko", "-s", station_id,
-         "-f", from_time, "-d", str(duration), "-o", output, "-m", "record"],
-    )
-    if result.returncode != 0:
+    client = radiko_recorder.RadikoClient()
+    try:
+        ok = client.record_timefree(station_id, from_time, duration, output)
+    finally:
+        client.logout()
+    if not ok:
         console.print("[red]❌ 録音失敗[/red]")
         return
 
@@ -942,14 +903,14 @@ def timefree_record(station_id, date, ftime, duration, output, with_art):
 
     if with_art:
         info = get_program_info_at_time(station_id, date, ftime)
-        if not info or not info[0]:
-            console.print("[yellow]⚠ カバーアート: 番組 URL が見つかりません[/yellow]")
+        if not info or (not info[0] and not info[2]):
+            console.print("[yellow]⚠ カバーアート: 番組の画像情報が見つかりません[/yellow]")
             return
-        url, _ = info
-        console.print(f"[blue]🖼 og:image を取得中: {url}[/blue]")
-        art = fetch_og_image(url)
+        url, _, image_url = info
+        console.print(f"[blue]🖼 アートワークを取得中...[/blue]")
+        art = fetch_art(image_url, url)
         if not art:
-            console.print("[yellow]⚠ og:image が見つかりませんでした[/yellow]")
+            console.print("[yellow]⚠ アートワーク画像が見つかりませんでした[/yellow]")
             return
         image_bytes, ext = art
         if embed_cover_art(output, image_bytes, ext):
@@ -1005,11 +966,12 @@ def record_by_prog_id(prog_id, start_offset_str, end_offset_str, output, with_ar
         # 過去の番組 → タイムフリー
         console.print("[blue]→ 過去の番組: タイムフリー録音[/blue]")
         from_time = f"{date}{ftime}00"
-        result = subprocess.run(
-            ["bash", RADISH_PATH, "-t", "radiko", "-s", station_id,
-             "-f", from_time, "-d", str(duration), "-o", output, "-m", "record"],
-        )
-        if result.returncode != 0:
+        client = radiko_recorder.RadikoClient()
+        try:
+            ok = client.record_timefree(station_id, from_time, duration, output)
+        finally:
+            client.logout()
+        if not ok:
             console.print("[red]❌ 録音失敗[/red]")
             return
         console.print(f"[green]✅ 録音完了: {output}[/green]")
@@ -1024,8 +986,7 @@ def record_by_prog_id(prog_id, start_offset_str, end_offset_str, output, with_ar
 
         cli_path = str(Path(__file__).resolve())
         radish_cmd = (
-            f"bash {RADISH_PATH} -t radiko -s {station_id}"
-            f" -d {actual_duration_mins} -o {output} -m record"
+            f"python {RECORDER_PATH} record {station_id} --live {actual_duration_mins} -o {output}"
         )
         if with_art:
             radish_cmd += f" && python {cli_path} embed-art {output} {station_id} {date} {ftime}"
@@ -1058,21 +1019,22 @@ def record_by_prog_id(prog_id, start_offset_str, end_offset_str, output, with_ar
         # 放送中 → 即時録音
         remaining = int((scheduled_end - now).total_seconds() / 60) + 1
         console.print(f"[blue]→ 放送中: 残り約 {remaining} 分を即時録音[/blue]")
-        result = subprocess.run(
-            ["bash", RADISH_PATH, "-t", "radiko", "-s", station_id,
-             "-d", str(remaining), "-o", output, "-m", "record"],
-        )
-        if result.returncode != 0:
+        client = radiko_recorder.RadikoClient()
+        try:
+            ok = client.record_live(station_id, remaining, output)
+        finally:
+            client.logout()
+        if not ok:
             console.print("[red]❌ 録音失敗[/red]")
             return
         console.print(f"[green]✅ 録音完了: {output}[/green]")
 
     if with_art:
         info = get_program_info_at_time(station_id, date, ftime)
-        if info and info[0]:
-            url_val, _ = info
-            console.print(f"[blue]🖼 og:image を取得中: {url_val}[/blue]")
-            art = fetch_og_image(url_val)
+        if info and (info[0] or info[2]):
+            url_val, _, image_url_val = info
+            console.print(f"[blue]🖼 アートワークを取得中...[/blue]")
+            art = fetch_art(image_url_val, url_val)
             if art:
                 image_bytes, ext = art
                 if embed_cover_art(output, image_bytes, ext):
@@ -1080,7 +1042,7 @@ def record_by_prog_id(prog_id, start_offset_str, end_offset_str, output, with_ar
                 else:
                     console.print("[red]❌ カバーアートの埋め込みに失敗しました[/red]")
             else:
-                console.print("[yellow]⚠ og:image が見つかりませんでした[/yellow]")
+                console.print("[yellow]⚠ アートワーク画像が見つかりませんでした[/yellow]")
 
 if __name__ == "__main__":
     cli()

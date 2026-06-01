@@ -116,46 +116,49 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, sans-s
   border: 5px solid transparent; border-top: 6px solid var(--accent2);
 }
 
-/* ── Detail panel ── */
-#detail-panel {
-  width: 320px; min-width: 320px; background: var(--surface); border-left: 1px solid var(--border);
-  display: flex; flex-direction: column; overflow-y: auto;
-  transition: width .2s, min-width .2s;
-}
-#detail-panel.collapsed { width: 0; min-width: 0; overflow: hidden; border: none; }
-#detail-header { padding: 12px 14px 8px; border-bottom: 1px solid var(--border); }
-#detail-close { float: right; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; padding: 0 2px; }
-#detail-close:hover { color: var(--text); }
-#detail-station { font-size: 11px; color: var(--accent); font-weight: 700; margin-bottom: 4px; }
-#detail-title { font-size: 15px; font-weight: 700; line-height: 1.4; margin-bottom: 4px; }
-#detail-meta { font-size: 11px; color: var(--muted); }
-#detail-body { padding: 10px 14px; flex: 1; }
-#detail-pfm { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
-#detail-info { font-size: 12px; line-height: 1.6; color: #bbb; white-space: pre-wrap; word-break: break-all; }
-#detail-url { font-size: 11px; color: var(--accent); word-break: break-all; display: block; margin-top: 6px; }
-#detail-actions { padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); }
+/* ── Program Card ── */
 .btn-record { background: var(--accent); color: #fff; }
 .btn-record:hover { opacity: .85; }
 .btn-play { background: #22c55e; color: #fff; }
 .btn-play:hover:not(:disabled) { opacity: .85; }
 .btn:disabled { opacity: 0.35; cursor: not-allowed; }
-#detail-status { font-size: 11px; color: #4ade80; min-height: 16px; text-align: center; }
-.detail-opt { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-.detail-opt label { cursor: pointer; }
-.detail-opt input[type=checkbox] { accent-color: var(--accent); }
+.prog-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+.prog-card-top { display: flex; align-items: flex-start; gap: 12px; padding: 16px; border-bottom: 1px solid var(--border); }
+.prog-card-info { flex: 1; min-width: 0; }
+.prog-card-station { font-size: 11px; color: var(--accent); font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.prog-card-badge { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 20px; letter-spacing: .4px; white-space: nowrap; }
+.badge-rec { background: #7f1d1d; color: #fca5a5; }
+.badge-sched { background: #1e3a5f; color: #93c5fd; }
+.prog-card-title { font-size: 15px; font-weight: 700; line-height: 1.4; margin-bottom: 6px; word-break: break-all; }
+.prog-card-time { font-size: 12px; color: var(--muted); }
+.prog-card-pfm { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.prog-card-artwork { width: 160px; height: 100px; flex-shrink: 0; border-radius: 8px; overflow: hidden; background: var(--surface2); display: flex; align-items: center; justify-content: center; font-size: 30px; }
+.prog-card-artwork img { width: 100%; height: 100%; object-fit: cover; }
+.prog-card-desc { padding: 12px 16px; font-size: 12px; line-height: 1.7; color: #bbb; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; border-bottom: 1px solid var(--border); }
+.prog-card-actions { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+.prog-card-btns { display: flex; gap: 8px; }
+.prog-card-btns .btn { flex: 1; padding: 8px; text-align: center; }
+.prog-card-opt { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.prog-card-opt label { cursor: pointer; }
+.prog-card-opt input[type=checkbox] { accent-color: var(--accent); }
+.prog-card-status { font-size: 11px; color: #4ade80; min-height: 16px; text-align: center; }
+
+/* ── Card Modal ── */
+#card-modal { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,0.65); display: flex; align-items: center; justify-content: center; padding: 24px; }
+#card-modal.hidden { display: none; }
+#card-modal-inner { width: 100%; max-width: 480px; }
 
 /* ── Recordings panel ── */
-#panel-recordings { flex-direction: column; overflow-y: auto; padding: 16px; }
-.rec-item { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
-.rec-name { flex: 1; font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rec-size { font-size: 11px; color: var(--muted); white-space: nowrap; }
-.btn-dl { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 5px; padding: 4px 10px; cursor: pointer; font-size: 11px; }
+#panel-recordings { flex-direction: column; overflow-y: auto; padding: 16px; align-items: center; }
+#recordings-list { width: 100%; max-width: 600px; }
+.btn-dl { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px; cursor: pointer; font-size: 12px; font-weight: 600; flex: 1; text-align: center; }
 .btn-dl:hover { background: var(--accent); border-color: var(--accent); }
-.btn-del { background: none; border: none; color: var(--accent2); cursor: pointer; font-size: 16px; padding: 0 4px; }
-.btn-del:hover { opacity: .7; }
+.btn-del { background: none; border: 1px solid var(--accent2); color: var(--accent2); border-radius: 6px; padding: 8px; cursor: pointer; font-size: 12px; font-weight: 600; flex: 1; text-align: center; }
+.btn-del:hover { background: var(--accent2); color: #fff; }
 
 /* ── Schedules panel ── */
-#panel-schedules { flex-direction: column; overflow-y: auto; padding: 16px; }
+#panel-schedules { flex-direction: column; overflow-y: auto; padding: 16px; align-items: center; }
+#schedules-list { width: 100%; max-width: 600px; }
 .sched-item { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
 .sched-info { flex: 1; }
 .sched-time { font-size: 12px; font-weight: 700; color: var(--accent); }
@@ -163,6 +166,8 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, sans-s
 .sched-out { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .btn-cancel { background: none; border: 1px solid var(--accent2); color: var(--accent2); border-radius: 5px; padding: 4px 10px; cursor: pointer; font-size: 11px; }
 .btn-cancel:hover { background: var(--accent2); color: #fff; }
+.btn-cancel-sched { background: none; border: 1px solid var(--accent2); color: var(--accent2); border-radius: 6px; padding: 8px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.btn-cancel-sched:hover { background: var(--accent2); color: #fff; }
 .empty-msg { color: var(--muted); font-size: 13px; text-align: center; padding: 40px; }
 </style>
 </head>
@@ -201,28 +206,10 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, sans-s
       <div id="tt-body"></div>
     </div>
   </div>
-  <div id="detail-panel" class="collapsed">
-    <div id="detail-header">
-      <button id="detail-close">✕</button>
-      <div id="detail-station"></div>
-      <div id="detail-title"></div>
-      <div id="detail-meta"></div>
-    </div>
-    <div id="detail-body">
-      <div id="detail-pfm"></div>
-      <div id="detail-info"></div>
-      <a id="detail-url" target="_blank" rel="noopener"></a>
-    </div>
-    <div id="detail-actions">
-      <div id="detail-status"></div>
-      <div class="detail-opt">
-        <input type="checkbox" id="opt-art" checked>
-        <label for="opt-art">カバーアートを埋め込む</label>
-      </div>
-      <button class="btn btn-record" id="btn-record">録音</button>
-      <button class="btn btn-play" id="btn-play-live">ライブ再生</button>
-    </div>
-  </div>
+</div>
+
+<div id="card-modal" class="hidden">
+  <div id="card-modal-inner"></div>
 </div>
 
 <!-- Recordings -->
@@ -257,11 +244,11 @@ function ftimeToMinutes(ftime) {
   return parseInt(ftime.slice(0,2)) * 60 + parseInt(ftime.slice(2,4));
 }
 
-function stationColor(station_id) {
+function stationColor(station_id, past = false) {
   let h = 0;
   for (const c of station_id) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
   const hue = (h % 360);
-  return `hsl(${hue},55%,32%)`;
+  return past ? `hsl(${hue},15%,18%)` : `hsl(${hue},55%,32%)`;
 }
 
 function post(url, body) {
@@ -325,14 +312,15 @@ document.getElementById('prev-day').addEventListener('click', () => {
 document.getElementById('next-day').addEventListener('click', () => {
   if (state.dateIdx > 0) { state.dateIdx--; loadDate(); }
 });
-document.getElementById('today-btn').addEventListener('click', () => {
+document.getElementById('today-btn').addEventListener('click', async () => {
   const today = new Date();
   const todayStr = today.getFullYear().toString()
     + String(today.getMonth()+1).padStart(2,'0')
     + String(today.getDate()).padStart(2,'0');
   state.dateIdx = state.dates.findIndex(d => d <= todayStr);
   if (state.dateIdx < 0) state.dateIdx = 0;
-  loadDate();
+  await loadDate();
+  scrollToNow();
 });
 
 // ── Timetable rendering ──
@@ -393,6 +381,8 @@ function renderRows() {
       row.appendChild(line);
     }
 
+    const now = new Date();
+    const date = state.dates[state.dateIdx];
     for (const p of byStation[st.station_id] || []) {
       const startMin = ftimeToMinutes(p.ftime);
       const left = (startMin / 60) * HOUR_W;
@@ -402,7 +392,11 @@ function renderRows() {
       block.dataset.progId = p.prog_id;
       block.style.left = left + 'px';
       block.style.width = width + 'px';
-      block.style.background = stationColor(p.station_id);
+      const progStart = new Date(`${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6,8)}T${p.ftime.slice(0,2)}:${p.ftime.slice(2,4)}:00`);
+      const progEnd = new Date(progStart.getTime() + p.duration * 60000);
+      const isPast = progEnd < now;
+      if (isPast) block.classList.add('past');
+      block.style.background = stationColor(p.station_id, isPast);
       block.innerHTML = `<span><span class="tt-prog-title">${esc(p.title)}</span>${p.pfm ? `<span class="tt-prog-pfm">${esc(p.pfm)}</span>` : ''}</span>`;
       block.addEventListener('click', () => selectProgram(p));
       row.appendChild(block);
@@ -439,15 +433,9 @@ function esc(str) {
   return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// ── Program detail ──
+// ── Program Card ──
 
-function selectProgram(p) {
-  // Deselect previous
-  document.querySelectorAll('.tt-prog.selected').forEach(el => el.classList.remove('selected'));
-  document.querySelector(`.tt-prog[data-prog-id="${p.prog_id}"]`)?.classList.add('selected');
-
-  state.selectedProg = p;
-
+function createProgCard(p, opts = {}) {
   const date = p.date || state.dates[state.dateIdx];
   const startH = p.ftime.slice(0,2) + ':' + p.ftime.slice(2,4);
   const endMin = ftimeToMinutes(p.ftime) + p.duration;
@@ -455,58 +443,88 @@ function selectProgram(p) {
   const now = new Date();
   const progStart = new Date(`${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6,8)}T${startH}:00`);
   const progEnd = new Date(progStart.getTime() + p.duration * 60000);
+  const isFuture = progStart > now;
 
-  let recordLabel = '録音';
+  let recordLabel = '今すぐ録音';
   if (progEnd < now) recordLabel = 'タイムフリー録音';
-  else if (progStart > now) recordLabel = 'スケジュール登録';
-  else recordLabel = '今すぐ録音';
+  else if (isFuture) recordLabel = 'スケジュール登録';
 
-  document.getElementById('detail-station').textContent = `${p.station_id}  ${p.station_name}`;
-  document.getElementById('detail-title').textContent = p.title;
-  document.getElementById('detail-meta').textContent = `${fmtDate(date)}  ${startH}〜${endH}  (${p.duration}分)`;
-  document.getElementById('detail-pfm').textContent = p.pfm ? `👤 ${p.pfm}` : '';
-  document.getElementById('detail-info').textContent = p.info || '';
-  const urlEl = document.getElementById('detail-url');
-  if (p.url) { urlEl.href = p.url; urlEl.textContent = p.url; }
-  else { urlEl.href = ''; urlEl.textContent = ''; }
-  const isAiring = progStart <= now && now < progEnd;
-  document.getElementById('btn-record').textContent = recordLabel;
-  document.getElementById('btn-play-live').disabled = !isAiring;
-  document.getElementById('detail-status').textContent = '';
-  document.getElementById('detail-panel').classList.remove('collapsed');
+  const card = document.createElement('div');
+  card.className = 'prog-card';
+  card.innerHTML = `
+    <div class="prog-card-top">
+      <div class="prog-card-info">
+        <div class="prog-card-station">${opts.badge ? `<span class="prog-card-badge ${opts.badge.cls}">${opts.badge.label}</span>` : ''}${esc(p.station_id)}　${esc(p.station_name || '')}</div>
+        <div class="prog-card-title">${esc(p.title)}</div>
+        <div class="prog-card-time">${fmtDate(date)}　${startH}〜${endH}　(${p.duration}分)</div>
+        ${p.pfm ? `<div class="prog-card-pfm">👤 ${esc(p.pfm)}</div>` : ''}
+      </div>
+      ${p.image_url ? `<div class="prog-card-artwork"><img src="${esc(p.image_url)}" alt="" onerror="this.parentElement.remove()"></div>` : ''}
+    </div>
+    ${p.info ? `<div class="prog-card-desc">${esc(p.info)}</div>` : ''}
+    <div class="prog-card-actions">
+      <div class="prog-card-btns">
+        <button class="btn btn-record">${esc(recordLabel)}</button>
+        <button class="btn btn-play" ${isFuture ? 'disabled' : ''}>再生</button>
+      </div>
+      <div class="prog-card-opt">
+        <input type="checkbox" id="card-opt-art" checked>
+        <label for="card-opt-art">カバーアートを埋め込む</label>
+      </div>
+      <div class="prog-card-status"></div>
+    </div>
+  `;
+
+  if (opts.actionsEl) {
+    card.querySelector('.prog-card-actions').replaceWith(opts.actionsEl);
+  } else {
+    const statusEl = card.querySelector('.prog-card-status');
+    card.querySelector('.btn-record').addEventListener('click', async () => {
+      const withArt = card.querySelector('#card-opt-art').checked;
+      const body = { prog_id: p.prog_id, with_art: withArt, do_register: isFuture };
+      statusEl.textContent = '...';
+      try {
+        const res = await post('/api/record', body);
+        const data = await res.json();
+        if (data.status === 'started') statusEl.textContent = '✅ 録音開始';
+        else if (data.status === 'scheduled') statusEl.textContent = `✅ スケジュール登録: ${data.scheduled?.slice(0,16) || ''}`;
+        else statusEl.textContent = JSON.stringify(data);
+      } catch(e) { statusEl.textContent = '❌ エラー'; }
+    });
+    card.querySelector('.btn-play').addEventListener('click', () => {
+      post('/api/play-program', { prog_id: p.prog_id }).then(() => updateNowPlaying());
+      closeCardModal();
+    });
+  }
+
+  return card;
 }
 
-document.getElementById('detail-close').addEventListener('click', () => {
-  document.getElementById('detail-panel').classList.add('collapsed');
+function showCardModal(p) {
+  document.querySelectorAll('.tt-prog.selected').forEach(el => el.classList.remove('selected'));
+  document.querySelector(`.tt-prog[data-prog-id="${p.prog_id}"]`)?.classList.add('selected');
+  state.selectedProg = p;
+
+  const inner = document.getElementById('card-modal-inner');
+  inner.innerHTML = '';
+  inner.appendChild(createProgCard(p));
+  document.getElementById('card-modal').classList.remove('hidden');
+}
+
+function closeCardModal() {
+  document.getElementById('card-modal').classList.add('hidden');
   document.querySelectorAll('.tt-prog.selected').forEach(el => el.classList.remove('selected'));
   state.selectedProg = null;
+}
+
+document.getElementById('card-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeCardModal();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeCardModal();
 });
 
-document.getElementById('btn-record').addEventListener('click', async () => {
-  if (!state.selectedProg) return;
-  const p = state.selectedProg;
-  const withArt = document.getElementById('opt-art').checked;
-
-  const date = p.date || state.dates[state.dateIdx];
-  const now = new Date();
-  const progStart = new Date(`${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6,8)}T${p.ftime.slice(0,2)}:${p.ftime.slice(2,4)}:00`);
-
-  const body = { prog_id: p.prog_id, with_art: withArt, do_register: progStart > now };
-  const statusEl = document.getElementById('detail-status');
-  statusEl.textContent = '...';
-  try {
-    const res = await post('/api/record', body);
-    const data = await res.json();
-    if (data.status === 'started') statusEl.textContent = '✅ 録音開始';
-    else if (data.status === 'scheduled') statusEl.textContent = `✅ スケジュール登録: ${data.scheduled?.slice(0,16) || ''}`;
-    else statusEl.textContent = JSON.stringify(data);
-  } catch(e) { statusEl.textContent = '❌ エラー'; }
-});
-
-document.getElementById('btn-play-live').addEventListener('click', () => {
-  if (!state.selectedProg) return;
-  post('/api/play', { station_id: state.selectedProg.station_id }).then(() => updateNowPlaying());
-});
+function selectProgram(p) { showCardModal(p); }
 
 // ── Now playing ──
 
@@ -534,6 +552,27 @@ document.getElementById('stop-btn').addEventListener('click', async () => {
 
 // ── Recordings ──
 
+function makeRecordingActionsEl(rec) {
+  const el = document.createElement('div');
+  el.className = 'prog-card-actions';
+  el.innerHTML = `
+    <div class="prog-card-btns">
+      <button class="btn-dl">ダウンロード</button>
+      <button class="btn-del">削除</button>
+    </div>
+    <div style="font-size:11px;color:var(--muted);text-align:right">${fmtSize(rec.size)}</div>
+  `;
+  el.querySelector('.btn-dl').addEventListener('click', () => {
+    window.location = `/api/recordings/${encodeURIComponent(rec.filename)}`;
+  });
+  el.querySelector('.btn-del').addEventListener('click', async () => {
+    if (!confirm(`削除しますか？\n${rec.filename}`)) return;
+    await fetch(`/api/recordings/${encodeURIComponent(rec.filename)}`, { method: 'DELETE' });
+    loadRecordings();
+  });
+  return el;
+}
+
 async function loadRecordings() {
   const res = await fetch('/api/recordings');
   const data = await res.json();
@@ -542,25 +581,42 @@ async function loadRecordings() {
     list.innerHTML = '<div class="empty-msg">録音ファイルがありません</div>';
     return;
   }
-  list.innerHTML = data.recordings.map(r => `
-    <div class="rec-item" data-filename="${esc(r.filename)}">
-      <span class="rec-name" title="${esc(r.filename)}">${esc(r.filename)}</span>
-      <span class="rec-size">${fmtSize(r.size)}</span>
-      <button class="btn-dl" onclick="window.location='/api/recordings/${encodeURIComponent(r.filename)}'">⬇</button>
-      <button class="btn-del" data-filename="${esc(r.filename)}" title="削除">🗑</button>
-    </div>
-  `).join('');
 
-  list.querySelectorAll('.btn-del').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      if (!confirm(`削除しますか？\n${btn.dataset.filename}`)) return;
-      await fetch(`/api/recordings/${encodeURIComponent(btn.dataset.filename)}`, { method: 'DELETE' });
-      loadRecordings();
-    });
-  });
+  list.innerHTML = '';
+  for (const rec of data.recordings) {
+    const actionsEl = makeRecordingActionsEl(rec);
+    let card;
+    if (rec.prog) {
+      card = createProgCard(rec.prog, { actionsEl, badge: rec.recording ? { label: '● REC', cls: 'badge-rec' } : null });
+    } else {
+      card = document.createElement('div');
+      card.className = 'prog-card';
+      card.innerHTML = `
+        <div class="prog-card-top">
+          <div class="prog-card-info">
+            <div class="prog-card-title">${esc(rec.filename)}</div>
+          </div>
+        </div>`;
+      card.appendChild(actionsEl);
+    }
+    card.style.marginBottom = '12px';
+    list.appendChild(card);
+  }
 }
 
 // ── Schedules ──
+
+function makeCancelActionsEl(jobId) {
+  const el = document.createElement('div');
+  el.className = 'prog-card-actions';
+  el.innerHTML = '<div class="prog-card-btns"><button class="btn btn-cancel-sched" style="flex:1">取り消し</button></div>';
+  el.querySelector('.btn-cancel-sched').addEventListener('click', async () => {
+    if (!confirm('このスケジュールを取り消しますか？')) return;
+    await fetch(`/api/schedules/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+    loadSchedules();
+  });
+  return el;
+}
 
 async function loadSchedules() {
   const res = await fetch('/api/schedules');
@@ -568,23 +624,29 @@ async function loadSchedules() {
   const list = document.getElementById('schedules-list');
   if (data.error) { list.innerHTML = `<div class="empty-msg">⚠ ${esc(data.error)}</div>`; return; }
   if (!data.schedules.length) { list.innerHTML = '<div class="empty-msg">スケジュールはありません</div>'; return; }
-  list.innerHTML = data.schedules.map(s => `
-    <div class="sched-item">
-      <div class="sched-info">
-        <div class="sched-time">${esc(s.scheduled)}</div>
-        <div class="sched-station">${esc(s.station_id)} — ${esc(s.duration)}分</div>
-        <div class="sched-out">${esc(s.output)}</div>
-      </div>
-      <button class="btn-cancel" data-jobid="${esc(s.job_id)}">取り消し</button>
-    </div>
-  `).join('');
-  list.querySelectorAll('.btn-cancel').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      if (!confirm(`ジョブ ${btn.dataset.jobid} を取り消しますか？`)) return;
-      await fetch(`/api/schedules/${encodeURIComponent(btn.dataset.jobid)}`, { method: 'DELETE' });
-      loadSchedules();
-    });
-  });
+
+  list.innerHTML = '';
+  for (const s of data.schedules) {
+    const actionsEl = makeCancelActionsEl(s.job_id);
+    let card;
+    if (s.prog) {
+      card = createProgCard(s.prog, { actionsEl, badge: { label: '⏰ 予約', cls: 'badge-sched' } });
+    } else {
+      card = document.createElement('div');
+      card.className = 'prog-card';
+      card.innerHTML = `
+        <div class="prog-card-top">
+          <div class="prog-card-info">
+            <div class="prog-card-station">${esc(s.station_id)}</div>
+            <div class="prog-card-title">${esc(s.scheduled)}</div>
+            <div class="prog-card-time">${esc(s.duration)}分</div>
+          </div>
+        </div>`;
+      card.appendChild(actionsEl);
+    }
+    card.style.marginBottom = '12px';
+    list.appendChild(card);
+  }
 }
 
 // ── Scroll to current time on load ──
