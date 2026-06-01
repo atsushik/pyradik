@@ -2,7 +2,7 @@
 """radiko タイムフリー / ライブの録音・再生を純 Python で行うモジュール。
 
 認証〜ストリーム URL 取得までを標準ライブラリのみで実装し、
-HLS の取得そのものは ffmpeg / ffplay に委譲する（radish-play.sh と同方式）。
+HLS の取得そのものは ffmpeg / ffplay に委譲する（原作 radi.sh と同方式）。
 
 CLI 例:
     # タイムフリー録音（放送後 7 日以内）
@@ -140,7 +140,7 @@ class RadikoClient:
         """stream XML から条件に合う playlist_create_url を返す。
 
         属性の出現順は固定でないため ElementTree で属性選択する。
-        ライブは _definst_ を含まない候補の 2 番目を優先（radish-play.sh 準拠）。
+        ライブは _definst_ を含まない候補の 2 番目を優先（原作 radi.sh 準拠）。
         """
         xml, _ = _get(STREAM_XML.format(station_id=station_id))
         root = ET.fromstring(xml)

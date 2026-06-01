@@ -1,8 +1,8 @@
-# radish
+# pyradik
 
-[radiko](http://radiko.jp/) / [NHKラジオ らじる★らじる](https://www.nhk.or.jp/radio/) / [ListenRadio](http://listenradio.jp/) で配信中・配信済みの番組を保存・再生するツール群です。配信形式と同じフォーマットで保存するため、別形式へのエンコードは行いません。
+[radiko](http://radiko.jp/) で配信中・配信済みの番組を保存・再生するツール群です。配信形式と同じフォーマットで保存するため、別形式へのエンコードは行いません。
 
-オリジナルのシェルスクリプト（[`radi.sh` / `radish-play.sh`](#原作のシェルスクリプトradish--radish-playsh)、作者: うる。 [@uru_2](https://twitter.com/uru_2)）をベースに、Python 製の CLI・録音エンジン・Web UI を追加したフォークです。原作は 2025-05-16 を最後に更新停止しています。
+うる。 ([@uru_2](https://twitter.com/uru_2)) による `radi.sh` をベースに、Python で再構成し、CLI・録音エンジン・Web UI などの機能を追加したものです（原作は radiko / NHK らじる★らじる / ListenRadio に対応していましたが、本リポジトリは radiko に絞っています）。
 
 
 ## スクリーンショット
@@ -34,12 +34,12 @@
 
 | ファイル | 役割 |
 |:-|:-|
-| `radiko_cli.py` | メイン CLI。番組表 DB の更新・検索、録音、スケジュール、再生制御、カバーアート埋め込み |
+| `radiko_cli.py` | メイン CLI。番組表 DB の更新・検索、録音、スケジュール、再生制御、音量操作、カバーアート埋め込み |
 | `radiko_recorder.py` | 録音・再生エンジン。radiko 認証〜HLS URL 取得を標準ライブラリのみで実装し、取得は ffmpeg / ffplay に委譲。CLI / Web UI 両方から利用される |
 | `radiko_programs.py` | radiko API から週間番組表を取得し DB スキーマ相当の dict を生成（urllib + ElementTree のみ） |
+| `radiko_audio.py` | 出力デバイス・音量の取得／設定（PipeWire の `wpctl` に委譲、Raspberry Pi OS 想定） |
 | `web_ui/web_ui.py` | FastAPI 製 REST API（ポート 8470） |
 | `web_ui/static/index.html` | シングルページ Web UI（番組表・検索・録音・再生・予約管理） |
-| `radi.sh` / `radish-play.sh` | 原作のシェルスクリプト（NHK / radiko / ListenRadio 対応） |
 
 ### データの流れ
 
@@ -86,17 +86,6 @@ sudo systemctl enable --now atd
 ```
 pip install fastapi uvicorn
 # 環境によっては: pip install --break-system-packages fastapi uvicorn
-```
-
-### radi.sh / radish-play.sh（原作スクリプト）
-
-- curl
-- libxml2-utils (xmllint)
-- jq
-- FFmpeg
-
-```
-sudo apt install curl libxml2-utils jq ffmpeg
 ```
 
 
@@ -162,60 +151,20 @@ $ python web_ui/web_ui.py
 - **録音ファイル**: 一覧・ダウンロード・削除、録音中の状態表示
 - **録音予約一覧**: `at` 予約の確認・取り消し
 
-事前に `radiko_cli.py update-programs` で番組表を取得しておく必要があります。
-
-
-## 原作のシェルスクリプト（radi.sh / radish-play.sh）
-
-リアルタイム保存のための原作スクリプトです。NHK らじる★らじる・ListenRadio にも対応しています。
-
-```
-$ ./radi.sh [options]
-```
-
-| 引数 | 必須 | 説明 | 備考 |
-|:-|:-:|:-|:-|
-| `-t` _SITE TYPE_ | ○ | 録音対象サイト | `nhk`: NHK らじる★らじる<br>`radiko`: radiko<br>`lisradi`: ListenRadio |
-| `-s` _STATION ID_ | △ | 放送局 ID | `-l` で表示される ID |
-| `-d` _MINUTE_ | ○ | 録音時間（分） | |
-| `-i` _MAIL_ | | ラジコプレミアム ログインメールアドレス | 環境変数 `RADIKO_MAIL` でも指定可 |
-| `-p` _PASSWORD_ | | ラジコプレミアム ログインパスワード | 環境変数 `RADIKO_PASSWORD` でも指定可 |
-| `-o` _PATH_ | | 出力パス | 未指定時はカレントに `放送局ID_年月日時分秒.m4a` を作成。拡張子は自動補完 |
-| `-l` | | 放送局 ID / 名称表示 | 結果は 300 行以上、取得はやや重い |
-
-### 実行例
-
-```
-# NHK らじる★らじる
-$ ./radi.sh -t nhk -s tokyo-fm -d 31 -o "/hoge/foo.m4a"
-
-# radiko エリア内の局
-$ ./radi.sh -t radiko -s LFR -d 21 -o "/hoge/$(date "+%Y-%m-%d") テレフォン人生相談.m4a"
-
-# radiko エリア外の局（ラジコプレミアム）
-$ ./radi.sh -t radiko -s HBC -d 31 -o "/hoge/foo.m4a" -i "foo@example.com" -p "password"
-
-# ラジコプレミアム（環境変数でログイン情報を指定）
-$ export RADIKO_MAIL="foo@example.com"
-$ export RADIKO_PASSWORD="password"
-$ ./radi.sh -t radiko -s HBC -d 31 -o "/hoge/foo.m4a"
-
-# ListenRadio
-$ ./radi.sh -t lisradi -s 30058 -d 30 -o "/hoge/foo.m4a"
-```
+再生・録音・予約の状態は Server-Sent Events で配信され、複数ブラウザ間でリアルタイムに同期されます。事前に `radiko_cli.py update-programs` で番組表を取得しておく必要があります。
 
 
 ## 注意点
 
-- 録音手法は対象サイトの仕様変更等で利用できなくなる可能性があります。
+- 録音手法は radiko の仕様変更等で利用できなくなる可能性があります。
 - radiko のタイムフリーは放送後 7 日以内が対象です。
 - 音量・出力デバイスの取得／設定（CLI の `volume`、Web UI の音量操作）は PipeWire の `wpctl` に委譲しています。**Raspberry Pi OS（PipeWire 構成）を想定した実装**のため、PulseAudio のみ・ALSA のみといった他環境では動作しないことがあります。
 
 
 ## 作った人
 
-- 原作（radi.sh / radish-play.sh）: うる。 ([@uru_2](https://twitter.com/uru_2))
-- Python CLI・録音エンジン・Web UI の追加: フォーク版メンテナ
+- 原作 `radi.sh`: うる。 ([@uru_2](https://twitter.com/uru_2))
+- Python での再構成・機能追加（CLI・録音エンジン・Web UI）: フォーク版メンテナ
 
 
 ## ライセンス
