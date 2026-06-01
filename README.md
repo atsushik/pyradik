@@ -36,18 +36,18 @@
 |:-|:-|
 | `radiko_cli.py` | メイン CLI。番組表 DB の更新・検索、録音、スケジュール、再生制御、カバーアート埋め込み |
 | `radiko_recorder.py` | 録音・再生エンジン。radiko 認証〜HLS URL 取得を標準ライブラリのみで実装し、取得は ffmpeg / ffplay に委譲。CLI / Web UI 両方から利用される |
+| `radiko_programs.py` | radiko API から週間番組表を取得し DB スキーマ相当の dict を生成（urllib + ElementTree のみ） |
 | `web_ui/web_ui.py` | FastAPI 製 REST API（ポート 8470） |
 | `web_ui/static/index.html` | シングルページ Web UI（番組表・検索・録音・再生・予約管理） |
-| `rx2` | radiko API から番組表 XML を取得し TSV で出力する bash スクリプト（6 時間キャッシュ） |
 | `radi.sh` / `radish-play.sh` | 原作のシェルスクリプト（NHK / radiko / ListenRadio 対応） |
 
 ### データの流れ
 
 ```
-rx2 (XML→TSV) ──→ radiko_cli.py update-programs ──→ radiko.db (SQLite)
-                                                       │ 参照
-        radiko_cli.py (CLI)  ──┐                       │
-        web_ui.py (REST API) ──┴─→ radiko_recorder.py ─┴─→ ffmpeg / ffplay
+radiko API ──→ radiko_programs.py ──→ radiko_cli.py update-programs ──→ radiko.db (SQLite)
+                                                                          │ 参照
+        radiko_cli.py (CLI)  ──┐                                          │
+        web_ui.py (REST API) ──┴─→ radiko_recorder.py ────────────────────┴─→ ffmpeg / ffplay
                                    (認証・HLS URL 取得)
 ```
 
@@ -126,7 +126,7 @@ $ python radiko_cli.py stop                       # 再生停止
 
 | コマンド | 説明 |
 |:-|:-|
-| `update-programs` | `rx2` を実行して番組表・放送局を DB に更新 |
+| `update-programs` | radiko API から番組表・放送局を DB に更新 |
 | `update-stations` | 放送局一覧のみ更新 |
 | `list-stations` | DB に登録された放送局一覧を表示 |
 | `auto-enable` | 受信可能な放送局を検出し `enabled_stations.txt` に書き出す |

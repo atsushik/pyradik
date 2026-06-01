@@ -22,10 +22,10 @@ from rich.align import Align
 from rich.layout import Layout
 
 import radiko_recorder
+import radiko_programs
 
 DB_PATH = "radiko.db"
 ENABLED_STATIONS_PATH = "enabled_stations.txt"
-RX2_PATH = "/home/atsushi/git/radish/rx2"
 
 MAX_WORKERS = 3
 RECORDER_PATH = str(Path(__file__).parent / "radiko_recorder.py")
@@ -419,70 +419,60 @@ def show_program(prog_id):
 
 @cli.command("update-programs")
 def update_db():
-    """[green]rx2[/green] コマンドを実行してDBに番組情報を更新"""
+    """radiko API から番組表を取得してDBに更新"""
     ensure_tables_exist()
-    try:
-        result = subprocess.run(["bash", RX2_PATH], capture_output=True, encoding='utf-8', errors='replace', check=True)
-        lines = result.stdout.strip().splitlines()
-    except subprocess.CalledProcessError as e:
-        console.print(f"[red]❌ rx2 実行エラー: {e}[/red]")
-        return
-
-    if not lines or not lines[0].startswith("station_id"):
-        console.print("[yellow]⚠ rx2 出力が不正です[/yellow]")
-        return
-
-    FIELD_NAMES = [
-        "station_id", "prog_id", "date", "weekday", "ftime", "duration",
-        "title", "url", "pfm", "info", "image_url"
-    ]
-
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    inserted = 0
-
-    for line in lines[1:]:
-        parts = line.strip().split("\t", maxsplit=10)
-        if len(parts) < 6:
-            continue
-        row = dict(zip(FIELD_NAMES, parts + [""] * (11 - len(parts))))
-        if not all(row.get(k) for k in ["station_id", "prog_id", "date", "ftime", "duration"]):
-            continue
-        try:
-            cur.execute("""
-                INSERT OR REPLACE INTO programs (
-                    station_id, prog_id, date, weekday, ftime, duration,
-                    title, url, pfm, info, image_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    row["station_id"],
-                    row["prog_id"],
-                    row["date"],
-                    row["weekday"],
-                    row["ftime"],
-                    int(row["duration"]),
-                    row["title"],
-                    row["url"],
-                    row["pfm"],
-                    row["info"],
-                    row["image_url"]
-                )
-            )
-            inserted += 1
-        except Exception as e:
-            console.print(f"[red]❌ エラー: {e} 行: {row}[/red]")
-
-    conn.commit()
-    conn.close()
-    console.print(f"[green]✅ {inserted} 件の番組をDBに登録しました[/green]")
-    _update_stations_inner()
-
-def _update_stations_inner():
     try:
         stations = radiko_recorder.list_stations()
     except Exception as e:
         console.print(f"[red]❌ 放送局一覧の取得エラー: {e}[/red]")
         return
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    inserted = 0
+
+    progress = Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        "[progress.percentage]{task.percentage:>3.0f}%",
+        TimeElapsedColumn(),
+        TimeRemainingColumn(),
+    )
+    with progress:
+        task = progress.add_task("⏳ 番組表取得中...", total=len(stations))
+        for _sid, progs in radiko_programs.iter_station_programs(stations):
+            for row in progs:
+                if not all(row.get(k) for k in ("station_id", "prog_id", "date", "ftime")):
+                    continue
+                try:
+                    cur.execute("""
+                        INSERT OR REPLACE INTO programs (
+                            station_id, prog_id, date, weekday, ftime, duration,
+                            title, url, pfm, info, image_url
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            row["station_id"], row["prog_id"], row["date"],
+                            row["weekday"], row["ftime"], row["duration"],
+                            row["title"], row["url"], row["pfm"],
+                            row["info"], row["image_url"],
+                        ))
+                    inserted += 1
+                except Exception as e:
+                    console.print(f"[red]❌ エラー: {e} 行: {row}[/red]")
+            progress.advance(task)
+
+    conn.commit()
+    conn.close()
+    console.print(f"[green]✅ {inserted} 件の番組をDBに登録しました[/green]")
+    _update_stations_inner(stations)
+
+def _update_stations_inner(stations=None):
+    if stations is None:
+        try:
+            stations = radiko_recorder.list_stations()
+        except Exception as e:
+            console.print(f"[red]❌ 放送局一覧の取得エラー: {e}[/red]")
+            return
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
