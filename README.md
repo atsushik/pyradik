@@ -44,9 +44,14 @@ python3 -m venv .venv
 
 ### 初期設定
 ```
-.venv/bin/python radiko_cli.py init-db --force   # DB初期化。省略しても update-programs が自動作成する
-.venv/bin/python radiko_cli.py update-programs   # 番組表＋放送局を取得（放送局更新も同時に行う）
-.venv/bin/python radiko_cli.py auto-enable       # 受信可能な放送局を enabled_stations.txt に書き出す
+# DB初期化。省略しても update-programs が自動作成する
+.venv/bin/python radiko_cli.py init-db --force
+
+# 番組表＋放送局を取得（放送局更新も同時に行う）
+.venv/bin/python radiko_cli.py update-programs
+
+# 受信可能な放送局を enabled_stations.txt に書き出す
+.venv/bin/python radiko_cli.py auto-enable
 ```
 
 ### Web UI の起動
@@ -183,17 +188,60 @@ $ .venv/bin/python web_ui/web_ui.py
 Web UI と同じプロセスで、外部連携向けの API を公開しています。
 
 - **REST API**: `/api/...`（`/docs` に OpenAPI、`/api/status` に再生・録音・予約の統合状態）。録音は `POST /api/recordings`（過去→タイムフリー / 放送中→即時 / 未来→予約 を自動判定）、シリーズ録画は `/api/rules`。
-- **MCP**（AIエージェント向け）: `http://ホスト名:8470/mcp`（Streamable HTTP）。`list_stations` / `play` / `record` / `search_programs` / `create_rule` などのツールを公開。Claude などの MCP クライアントに次のように登録します。
+- **MCP**（AIエージェント向け）: `http://ホスト名:8470/mcp`（Streamable HTTP）。`list_stations` / `now_playing` / `play` / `stop` / `get_volume` / `set_volume` / `search_programs` / `programs_now` / `record` / `list_jobs` / `list_reservations` / `cancel_reservation` / `create_rule` / `list_rules` / `delete_rule` の 15 ツールを公開。
+
+
+## MCP クライアントからの利用（Claude Code / Codex / Gemini CLI）
+
+エンドポイントは **`http://ホスト名:8470/mcp`**（Streamable HTTP）です。以下の `ホスト名` は実際のホスト名 / IP に置き換えてください（同じマシンからなら `localhost`）。サーバ（`web_ui.py`）が起動している必要があります。
+
+接続すると「いま放送中の番組は？」「FMヨコハマをかけて」「秀島史香の番組を毎回録って」のような指示が、`programs_now` / `play` / `create_rule` などのツール呼び出しに変換されて実行されます。
+
+### Claude Code
+
+HTTP トランスポートを直接サポートします。
+
+```
+claude mcp add --transport http pyradik http://ホスト名:8470/mcp
+```
+
+または、プロジェクト直下の `.mcp.json` に記述:
 
 ```json
 {
   "mcpServers": {
-    "pyradik": { "url": "http://ホスト名:8470/mcp" }
+    "pyradik": { "type": "http", "url": "http://ホスト名:8470/mcp" }
   }
 }
 ```
 
-> 認証は未実装です。LAN 外へ公開する場合はリバースプロキシ等での保護を前提にしてください。
+登録後、Claude Code 内で `/mcp` コマンドで接続状態とツール一覧を確認できます。
+
+### Gemini CLI
+
+`httpUrl` キーで Streamable HTTP を直接サポートします。`~/.gemini/settings.json`（またはプロジェクトの `.gemini/settings.json`）に:
+
+```json
+{
+  "mcpServers": {
+    "pyradik": { "httpUrl": "http://ホスト名:8470/mcp" }
+  }
+}
+```
+
+登録後、Gemini CLI 内で `/mcp` で接続を確認できます。
+
+### Codex CLI
+
+Codex の MCP は stdio 起動が基本のため、HTTP エンドポイントへは `mcp-remote` ブリッジ経由で接続します（Node.js / `npx` が必要）。`~/.codex/config.toml` に:
+
+```toml
+[mcp_servers.pyradik]
+command = "npx"
+args = ["-y", "mcp-remote", "http://ホスト名:8470/mcp"]
+```
+
+> **認証は未実装**です。いずれのクライアントも無認証で `/mcp` に接続します。誰でも録音・再生・予約を操作できるため、**同一 LAN 内に限定**してください。LAN 外へ公開する場合は、リバースプロキシでの認証 / TLS を前提にしてください。
 
 
 ## 注意点
