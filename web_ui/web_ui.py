@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -34,6 +35,15 @@ async def lifespan(app: FastAPI):
     _loop = asyncio.get_running_loop()
     _wake = asyncio.Event()
     task = asyncio.create_task(_broadcast_loop())
+
+    port = _server.config.port if _server else 8470
+    print(
+        "\n"
+        f"  ▶ radiko Web UI を起動しました  →  http://localhost:{port}/\n"
+        "  ■ 終了するには Ctrl-C を押してください\n",
+        flush=True,
+    )
+
     yield
     task.cancel()
 
@@ -518,6 +528,7 @@ def download_recording(filename: str):
 _subscribers: "set[asyncio.Queue]" = set()
 _loop: "asyncio.AbstractEventLoop | None" = None
 _wake: "asyncio.Event | None" = None
+_server = None  # uvicorn.Server。SSE ジェネレータが should_exit を見て抜けるために参照する
 
 POLL_INTERVAL = 2.0       # 状態スナップショットの最大間隔（秒）
 KEEPALIVE_INTERVAL = 15.0  # SSE コメント行で接続維持する間隔（秒）
@@ -565,12 +576,18 @@ async def events():
             # 接続直後に現在の状態を 1 度流す
             snap = await asyncio.to_thread(build_snapshot)
             yield f"data: {json.dumps(snap, default=str)}\n\n"
-            while True:
+            last_ka = time.monotonic()
+            # should_exit を 1 秒ごとに確認し、シャットダウン時は自分から抜ける。
+            # こうしないと uvicorn が「この SSE 接続が閉じるまで」終了を待ち続ける。
+            while not (_server and _server.should_exit):
                 try:
-                    snap = await asyncio.wait_for(q.get(), timeout=KEEPALIVE_INTERVAL)
+                    snap = await asyncio.wait_for(q.get(), timeout=1.0)
                     yield f"data: {json.dumps(snap, default=str)}\n\n"
+                    last_ka = time.monotonic()
                 except asyncio.TimeoutError:
-                    yield ": keep-alive\n\n"
+                    if time.monotonic() - last_ka >= KEEPALIVE_INTERVAL:
+                        yield ": keep-alive\n\n"
+                        last_ka = time.monotonic()
         finally:
             _subscribers.discard(q)
 
@@ -583,4 +600,11 @@ async def events():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8470)
+    config = uvicorn.Config(app, host="0.0.0.0", port=8470, timeout_graceful_shutdown=5)
+    _server = uvicorn.Server(config)
+    try:
+        # シャットダウン完了後に asyncio.run が再送出する KeyboardInterrupt を
+        # 握りつぶし、Ctrl-C 時のトレースバック表示を抑える（終了処理は正常に完了済み）
+        _server.run()
+    except KeyboardInterrupt:
+        pass
