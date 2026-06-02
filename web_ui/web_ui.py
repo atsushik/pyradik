@@ -913,7 +913,8 @@ def build_snapshot():
     return {
         "now_playing": _now_playing_data(),
         "recordings": _recordings_data(),
-        "schedules": _schedules_data() or [],
+        "reservations": radiko_state.list_reservations(status="scheduled"),
+        "rules": radiko_state.list_rules(),
     }
 
 

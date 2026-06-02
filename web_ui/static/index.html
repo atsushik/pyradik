@@ -189,6 +189,20 @@ mark { background: var(--accent); color: #fff; border-radius: 3px; padding: 0 2p
 .btn-cancel-sched { background: none; border: 1px solid var(--accent2); color: var(--accent2); border-radius: 6px; padding: 8px; cursor: pointer; font-size: 12px; font-weight: 600; }
 .btn-cancel-sched:hover { background: var(--accent2); color: #fff; }
 .empty-msg { color: var(--muted); font-size: 13px; text-align: center; padding: 40px; }
+
+/* ── Rules panel ── */
+#panel-rules { flex-direction: column; overflow-y: auto; padding: 16px; align-items: center; }
+#rules-pane { width: 100%; max-width: 600px; }
+.rule-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
+.rule-form input[type=text] { flex: 1 1 160px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; color: var(--text); font-size: 14px; }
+.rule-form input[type=text]:focus { outline: none; border-color: var(--accent); }
+.rule-form #rule-add { background: var(--accent); color: #fff; white-space: nowrap; }
+.rule-art { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.rule-art input { accent-color: var(--accent); }
+.rule-hint { font-size: 11px; color: var(--muted); margin-bottom: 14px; }
+.rule-item { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+.rule-item .rule-q { flex: 1; font-weight: 700; }
+.rule-item .rule-meta { font-size: 11px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -212,7 +226,8 @@ mark { background: var(--accent); color: #fff; border-radius: 3px; padding: 0 2p
   <button class="tab active" data-tab="timetable">番組表</button>
   <button class="tab" data-tab="search">検索</button>
   <button class="tab" data-tab="recordings">録音ファイル</button>
-  <button class="tab" data-tab="schedules">録音予約一覧</button>
+  <button class="tab" data-tab="schedules">録音予約</button>
+  <button class="tab" data-tab="rules">ルール</button>
 </div>
 
 <!-- Timetable -->
@@ -258,9 +273,23 @@ mark { background: var(--accent); color: #fff; border-radius: 3px; padding: 0 2p
   <div id="recordings-list"></div>
 </div>
 
-<!-- Schedules -->
+<!-- Reservations -->
 <div class="tab-panel" id="panel-schedules">
   <div id="schedules-list"></div>
+</div>
+
+<!-- Rules (series recording) -->
+<div class="tab-panel" id="panel-rules">
+  <div id="rules-pane">
+    <form id="rule-form" class="rule-form">
+      <input type="text" id="rule-query" placeholder="番組名キーワード（例: 山下達郎）" autocomplete="off">
+      <input type="text" id="rule-station" placeholder="局ID（任意・例 YFM）" autocomplete="off">
+      <label class="rule-art"><input type="checkbox" id="rule-art" checked> カバーアート</label>
+      <button class="btn" id="rule-add" type="submit">＋ ルール追加</button>
+    </form>
+    <div class="rule-hint">一致する今後の放送回が自動で予約されます。放送時刻が変わっても追従し、放送がなくなった予約は自動削除されます。</div>
+    <div id="rules-list"></div>
+  </div>
 </div>
 
 <script>
@@ -306,7 +335,8 @@ document.querySelectorAll('.tab').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + tab));
     // SSE で受信済みの最新状態から即描画（未受信なら次の push で埋まる）
     if (tab === 'recordings') renderRecordings(latest.recordings);
-    if (tab === 'schedules') renderSchedules(latest.schedules);
+    if (tab === 'schedules') renderReservations(latest.reservations);
+    if (tab === 'rules') renderRules(latest.rules);
     if (tab === 'search') document.getElementById('search-input').focus();
   });
 });
@@ -464,7 +494,7 @@ function renderRows() {
     nameEl.dataset.stationId = st.station_id;
     nameEl.innerHTML = `<span class="tt-station-id">${esc(st.station_id)}</span><span class="tt-station-fullname">${esc(st.name)}</span>`;
     nameEl.addEventListener('click', () => {
-      post('/api/play', { station_id: st.station_id });  // 状態反映は SSE 経由
+      post('/api/playback/play', { station_id: st.station_id });  // 状態反映は SSE 経由
     });
     namesCol.appendChild(nameEl);
 
@@ -601,13 +631,12 @@ function createProgCard(p, opts = {}) {
     const statusEl = card.querySelector('.prog-card-status');
     card.querySelector('.btn-record').addEventListener('click', async () => {
       const withArt = card.querySelector('#card-opt-art').checked;
-      const body = { prog_id: p.prog_id, with_art: withArt, do_register: isFuture };
       statusEl.textContent = '...';
       try {
-        const res = await post('/api/record', body);
+        const res = await post('/api/recordings', { prog_id: p.prog_id, with_art: withArt });
         const data = await res.json();
-        if (data.status === 'started') statusEl.textContent = '✅ 録音開始';
-        else if (data.status === 'scheduled') statusEl.textContent = `✅ スケジュール登録: ${data.scheduled?.slice(0,16) || ''}`;
+        if (data.kind === 'reservation') statusEl.textContent = `✅ 予約登録: ${(data.target?.start_at || '').slice(0,16).replace('T',' ')}`;
+        else if (data.kind === 'job') statusEl.textContent = data.method === 'timefree' ? '✅ タイムフリー録音開始' : '✅ 録音開始';
         else statusEl.textContent = JSON.stringify(data);
       } catch(e) { statusEl.textContent = '❌ エラー'; }
     });
@@ -651,7 +680,7 @@ function selectProgram(p) { showCardModal(p); }
 // 30 秒ポーリングやタブ依存ロードの代わりに、サーバの変化を即受信して再描画する。
 
 let activeTab = 'timetable';
-let latest = { now_playing: null, recordings: null, schedules: null };
+let latest = { now_playing: null, recordings: null, reservations: null, rules: null };
 
 function connectEvents() {
   const es = new EventSource('/api/events');
@@ -660,7 +689,8 @@ function connectEvents() {
     latest = s;
     applyNowPlaying(s.now_playing);
     if (activeTab === 'recordings') renderRecordings(s.recordings);
-    if (activeTab === 'schedules') renderSchedules(s.schedules);
+    if (activeTab === 'schedules') renderReservations(s.reservations);
+    if (activeTab === 'rules') renderRules(s.rules);
   };
   // 切断時（再起動・ネットワーク断）は EventSource が自動で再接続する
 }
@@ -745,48 +775,88 @@ function renderRecordings(recordings) {
   }
 }
 
-// ── Schedules ──
+// ── Reservations（予約・state.db） ──
 
-function makeCancelActionsEl(jobId) {
+function resToProg(r) {
+  const d = new Date(r.start_at);
+  const p2 = n => String(n).padStart(2, '0');
+  const date = `${d.getFullYear()}${p2(d.getMonth()+1)}${p2(d.getDate())}`;
+  const ftime = `${p2(d.getHours())}${p2(d.getMinutes())}`;
+  const st = (state.stations || []).find(s => s.station_id === r.station_id);
+  return {
+    prog_id: r.prog_id || '', station_id: r.station_id,
+    station_name: st ? st.name : r.station_id,
+    date, ftime, duration: r.duration_min, title: r.title || '(無題)',
+  };
+}
+
+function makeReservationActionsEl(r) {
   const el = document.createElement('div');
   el.className = 'prog-card-actions';
   el.innerHTML = '<div class="prog-card-btns"><button class="btn btn-cancel-sched" style="flex:1">取り消し</button></div>';
   el.querySelector('.btn-cancel-sched').addEventListener('click', () => {
-    if (!confirm('このスケジュールを取り消しますか？')) return;
-    fetch(`/api/schedules/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
-    // 一覧の更新は SSE 経由
+    if (!confirm('この予約を取り消しますか？')) return;
+    fetch(`/api/reservations/${r.id}`, { method: 'DELETE' });  // 更新は SSE 経由
   });
   return el;
 }
 
-function renderSchedules(schedules) {
-  if (schedules == null) return;  // SSE 未受信
+function renderReservations(reservations) {
+  if (reservations == null) return;  // SSE 未受信
   const list = document.getElementById('schedules-list');
-  if (!schedules.length) { list.innerHTML = '<div class="empty-msg">スケジュールはありません</div>'; return; }
-
+  if (!reservations.length) { list.innerHTML = '<div class="empty-msg">予約はありません</div>'; return; }
   list.innerHTML = '';
-  for (const s of schedules) {
-    const actionsEl = makeCancelActionsEl(s.job_id);
-    let card;
-    if (s.prog) {
-      card = createProgCard(s.prog, { actionsEl, badge: { label: '⏰ 予約', cls: 'badge-sched' } });
-    } else {
-      card = document.createElement('div');
-      card.className = 'prog-card';
-      card.innerHTML = `
-        <div class="prog-card-top">
-          <div class="prog-card-info">
-            <div class="prog-card-station">${esc(s.station_id)}</div>
-            <div class="prog-card-title">${esc(s.scheduled)}</div>
-            <div class="prog-card-time">${esc(s.duration)}分</div>
-          </div>
-        </div>`;
-      card.appendChild(actionsEl);
-    }
+  for (const r of reservations) {
+    const badge = r.rule_id ? { label: '🔁 シリーズ', cls: 'badge-sched' } : { label: '⏰ 予約', cls: 'badge-sched' };
+    const card = createProgCard(resToProg(r), { actionsEl: makeReservationActionsEl(r), badge });
     card.style.marginBottom = '12px';
     list.appendChild(card);
   }
 }
+
+// ── Rules（タイトル定期＝シリーズ録画） ──
+
+function renderRules(rules) {
+  if (rules == null) return;
+  const list = document.getElementById('rules-list');
+  if (!rules.length) { list.innerHTML = '<div class="empty-msg">ルールはありません</div>'; return; }
+  list.innerHTML = '';
+  for (const r of rules) {
+    const meta = [r.station_id ? `局:${r.station_id}` : '全局',
+                  r.with_art ? 'アート' : null,
+                  r.enabled ? null : '無効'].filter(Boolean).join(' / ');
+    const item = document.createElement('div');
+    item.className = 'rule-item';
+    item.innerHTML = `<div style="flex:1"><div class="rule-q">🔁 ${esc(r.query)}</div><div class="rule-meta">${esc(meta)}</div></div>`;
+    const del = document.createElement('button');
+    del.className = 'btn-cancel'; del.textContent = '削除';
+    del.addEventListener('click', () => {
+      if (!confirm(`ルール「${r.query}」と、その未来予約を削除しますか？`)) return;
+      fetch(`/api/rules/${r.id}`, { method: 'DELETE' });  // 更新は SSE 経由
+    });
+    item.appendChild(del);
+    list.appendChild(item);
+  }
+}
+
+document.getElementById('rule-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const query = document.getElementById('rule-query').value.trim();
+  if (!query) return;
+  const station = document.getElementById('rule-station').value.trim();
+  const body = { query, with_art: document.getElementById('rule-art').checked };
+  if (station) body.station_id = station;
+  const btn = document.getElementById('rule-add');
+  btn.disabled = true;
+  try {
+    await post('/api/rules', body);
+    document.getElementById('rule-query').value = '';
+    document.getElementById('rule-station').value = '';
+  } finally {
+    btn.disabled = false;
+  }
+  // 一覧は SSE 経由で更新
+});
 
 // ── Scroll to current time on load ──
 
