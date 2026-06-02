@@ -1,2 +1,4 @@
 rich
 rich-click
+fastapi
+uvicorn

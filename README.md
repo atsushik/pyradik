@@ -66,11 +66,6 @@ sudo apt install ffmpeg
 ### radiko_cli.py
 
 ```
-pip install -r requirements.txt   # rich, rich-click
-```
-
-Raspberry Pi OS / Debian 系では apt でもインストールできます。
-```
 sudo apt install python3-rich python3-rich-click
 ```
 
@@ -89,12 +84,16 @@ Raspberry Pi OS / Debian 系では apt で入れられます（依存の starlet
 sudo apt install python3-fastapi python3-uvicorn
 ```
 
-apt が使えない環境では仮想環境を作って pip で入れてください。
+### apt が使えない環境の場合
+
+Python パッケージ（rich / rich-click / fastapi / uvicorn）は `requirements.txt` にまとめてあります。仮想環境を作って一括で入れてください。
 
 ```
 python3 -m venv .venv && . .venv/bin/activate
-pip install fastapi uvicorn
+pip install -r requirements.txt
 ```
+
+※ FFmpeg と `at` はシステム側のパッケージのため、これとは別に導入が必要です（`sudo apt install ffmpeg at`）。
 
 
 ## 使い方（radiko_cli.py）
