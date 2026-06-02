@@ -27,6 +27,7 @@ import radiko_state
 import radiko_recording
 import radiko_scheduler
 import radiko_mcp
+import radiko_schemas as S
 
 # 設定は radiko_config に一元化（環境変数で上書き可）
 DB_PATH = radiko_config.DB_PATH
@@ -93,12 +94,12 @@ def root():
     )
 
 
-@app.get("/api/version", tags=["meta"], summary="バージョン情報")
+@app.get("/api/version", tags=["meta"], summary="バージョン情報", response_model=S.VersionOut)
 def version():
     return {"version": radiko_config.VERSION}
 
 
-@app.get("/api/health", tags=["meta"], summary="ヘルスチェック")
+@app.get("/api/health", tags=["meta"], summary="ヘルスチェック", response_model=S.HealthOut)
 def health():
     checks = {}
     try:
@@ -118,7 +119,7 @@ def health():
     return {"status": "ok" if ok else "degraded", "version": radiko_config.VERSION, "checks": checks}
 
 
-@app.get("/api/dates")
+@app.get("/api/dates", tags=["programs"], response_model=S.DatesOut)
 def get_dates():
     conn = get_db()
     rows = conn.execute("SELECT DISTINCT date FROM programs WHERE date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' ORDER BY date DESC LIMIT 14").fetchall()
@@ -126,7 +127,7 @@ def get_dates():
     return {"dates": [r[0] for r in rows]}
 
 
-@app.get("/api/stations")
+@app.get("/api/stations", tags=["programs"], response_model=S.StationsOut)
 def get_stations():
     conn = get_db()
     enabled = load_enabled()
@@ -144,7 +145,7 @@ def get_stations():
     return {"stations": [{"station_id": r[0], "name": r[1]} for r in rows]}
 
 
-@app.get("/api/programs")
+@app.get("/api/programs", tags=["programs"], response_model=S.ProgramsOut)
 def get_programs(date: str):
     conn = get_db()
     enabled = load_enabled()
@@ -180,7 +181,7 @@ def get_programs(date: str):
     }
 
 
-@app.get("/api/search")
+@app.get("/api/search", tags=["programs"], response_model=S.SearchOut)
 def search_programs(q: str, scope: str = "enabled", aired: str = "upcoming,airing,aired"):
     """番組検索。
 
@@ -240,7 +241,7 @@ def search_programs(q: str, scope: str = "enabled", aired: str = "upcoming,airin
     return {"q": q, "scope": scope, "aired": sorted(states), "programs": programs}
 
 
-@app.get("/api/programs/{prog_id}")
+@app.get("/api/programs/{prog_id}", tags=["programs"], response_model=S.ProgramDetailOut)
 def get_program(prog_id: str):
     conn = get_db()
     r = conn.execute(
@@ -266,7 +267,7 @@ class RecordRequest(BaseModel):
     do_register: bool = False
 
 
-@app.post("/api/record")
+@app.post("/api/record", tags=["recordings"], response_model=S.RecordLegacyOut, deprecated=True)
 def record_program(req: RecordRequest, bg: BackgroundTasks):
     conn = get_db()
     r = conn.execute(
@@ -334,7 +335,7 @@ class PlayRequest(BaseModel):
     station_id: str
 
 
-@app.post("/api/play")
+@app.post("/api/play", tags=["playback"], response_model=S.PlayOut, deprecated=True)
 def play_station(req: PlayRequest):
     subprocess.run(["pkill", "ffplay"], check=False)
     subprocess.Popen(
@@ -349,7 +350,7 @@ class PlayProgramRequest(BaseModel):
     prog_id: str
 
 
-@app.post("/api/play-program")
+@app.post("/api/play-program", tags=["playback"], response_model=S.PlayOut)
 def play_program(req: PlayProgramRequest):
     conn = get_db()
     r = conn.execute(
@@ -381,7 +382,7 @@ def play_program(req: PlayProgramRequest):
     return {"status": "playing", "type": "timefree", "station_id": station_id}
 
 
-@app.post("/api/stop")
+@app.post("/api/stop", tags=["playback"], response_model=S.StatusMsg)
 def stop_playback():
     r = subprocess.run(["pkill", "ffplay"], capture_output=True)
     trigger_refresh()
@@ -398,7 +399,7 @@ def _now_playing_data():
     return {"playing": False, "station_id": None, **base}
 
 
-@app.get("/api/now-playing")
+@app.get("/api/now-playing", tags=["playback"], response_model=S.NowPlayingOut)
 def now_playing():
     return _now_playing_data()
 
@@ -407,7 +408,7 @@ class VolumeRequest(BaseModel):
     level: float
 
 
-@app.get("/api/volume")
+@app.get("/api/volume", tags=["playback"], response_model=S.VolumeOut)
 def get_volume():
     # wpctl 前提（Raspberry Pi OS / PipeWire 想定）。他環境では null になることがある。
     return {
@@ -418,7 +419,7 @@ def get_volume():
     }
 
 
-@app.post("/api/volume")
+@app.post("/api/volume", tags=["playback"], response_model=S.VolumeSetOut)
 def set_volume(req: VolumeRequest):
     if not radiko_audio.available():
         raise HTTPException(503, "wpctl unavailable (Raspberry Pi OS / PipeWire only)")
@@ -476,7 +477,7 @@ class PlaybackPlay(BaseModel):
     station_name: "str | None" = None
 
 
-@app.post("/api/playback/play", tags=["playback"], summary="再生（station_id または station_name で指定）")
+@app.post("/api/playback/play", tags=["playback"], summary="再生（station_id または station_name で指定）", response_model=S.PlayOut)
 def playback_play(req: PlaybackPlay):
     token = req.station_id or req.station_name
     if not token:
@@ -496,14 +497,14 @@ def playback_play(req: PlaybackPlay):
     return {"status": "playing", "station_id": sid, "station_name": cands[0]["name"]}
 
 
-@app.post("/api/playback/stop", tags=["playback"], summary="再生停止")
+@app.post("/api/playback/stop", tags=["playback"], summary="再生停止", response_model=S.StatusMsg)
 def playback_stop():
     r = subprocess.run(["pkill", "ffplay"], capture_output=True)
     trigger_refresh()
     return {"status": "stopped" if r.returncode == 0 else "not_playing"}
 
 
-@app.get("/api/playback", tags=["playback"], summary="再生の現在状態（局・番組・音量）")
+@app.get("/api/playback", tags=["playback"], summary="再生の現在状態（局・番組・音量）", response_model=S.PlaybackOut)
 def playback_state():
     np = _now_playing_data()
     if np.get("playing") and np.get("station_id"):
@@ -513,19 +514,19 @@ def playback_state():
     return np
 
 
-@app.get("/api/now", tags=["discovery"], summary="現在放送中（受信可能局）")
+@app.get("/api/now", tags=["discovery"], summary="現在放送中（受信可能局）", response_model=S.NowOut)
 def now_api():
     enabled = load_enabled()
     return {"programs": _current_programs(list(enabled) if enabled else None)}
 
 
-@app.get("/api/stations/{station_id}/now", tags=["discovery"], summary="その局の現在番組")
+@app.get("/api/stations/{station_id}/now", tags=["discovery"], summary="その局の現在番組", response_model=S.StationNowOut)
 def station_now_api(station_id: str):
     cur = _current_programs([station_id])
-    return cur[0] if cur else {"station_id": station_id, "program": None}
+    return {"station_id": station_id, "program": cur[0] if cur else None}
 
 
-@app.get("/api/status", tags=["meta"], summary="再生・録音・予約の統合ステータス")
+@app.get("/api/status", tags=["meta"], summary="再生・録音・予約の統合ステータス", response_model=S.StatusOut)
 def status_api():
     active = [j for j in radiko_state.list_jobs() if j["status"] == "recording"]
     reservations = radiko_state.list_reservations(status="scheduled")
@@ -598,7 +599,7 @@ def _schedules_data():
     return jobs
 
 
-@app.get("/api/schedules")
+@app.get("/api/schedules", tags=["reservations"], response_model=S.SchedulesLegacyOut, deprecated=True)
 def list_schedules():
     jobs = _schedules_data()
     if jobs is None:
@@ -606,7 +607,7 @@ def list_schedules():
     return {"schedules": jobs}
 
 
-@app.delete("/api/schedules/{job_id}")
+@app.delete("/api/schedules/{job_id}", tags=["reservations"], response_model=S.StopJobOut, deprecated=True)
 def cancel_schedule(job_id: str):
     r = subprocess.run(["atrm", job_id], capture_output=True, text=True)
     if r.returncode != 0:
@@ -650,12 +651,12 @@ def _recordings_data():
     return recordings
 
 
-@app.get("/api/recordings")
+@app.get("/api/recordings", tags=["recordings"], response_model=S.RecordingsOut)
 def list_recordings():
     return {"recordings": _recordings_data()}
 
 
-@app.delete("/api/recordings/{filename}")
+@app.delete("/api/recordings/{filename}", tags=["recordings"], response_model=S.StatusMsg)
 def delete_recording(filename: str):
     path = RECORDINGS_DIR / filename
     if not path.exists() or not str(path.resolve()).startswith(str(RECORDINGS_DIR.resolve())):
@@ -697,7 +698,7 @@ def _target_view(t):
     }
 
 
-@app.post("/api/recordings", tags=["recordings"],
+@app.post("/api/recordings", tags=["recordings"], response_model=S.RecordingCreateResult,
           summary="録音を作成（過去/放送中は即時、未来は予約に自動振り分け）")
 def create_recording(req: RecordingCreate):
     try:
@@ -735,12 +736,12 @@ def _job_view(j):
     return out
 
 
-@app.get("/api/jobs", tags=["jobs"], summary="録音ジョブ一覧（進捗つき）")
+@app.get("/api/jobs", tags=["jobs"], summary="録音ジョブ一覧（進捗つき）", response_model=S.JobsOut)
 def list_jobs_api():
     return {"jobs": [_job_view(j) for j in radiko_state.list_jobs()]}
 
 
-@app.get("/api/jobs/{job_id}", tags=["jobs"], summary="録音ジョブの詳細・進捗")
+@app.get("/api/jobs/{job_id}", tags=["jobs"], summary="録音ジョブの詳細・進捗", response_model=S.JobOut)
 def get_job_api(job_id: str):
     j = radiko_state.get_job(job_id)
     if not j:
@@ -748,7 +749,7 @@ def get_job_api(job_id: str):
     return _job_view(j)
 
 
-@app.delete("/api/jobs/{job_id}", tags=["jobs"], summary="実行中の録音を停止")
+@app.delete("/api/jobs/{job_id}", tags=["jobs"], summary="実行中の録音を停止", response_model=S.StopJobOut)
 def stop_job_api(job_id: str):
     j = radiko_state.get_job(job_id)
     if not j:
@@ -762,12 +763,12 @@ def stop_job_api(job_id: str):
 
 # ── 予約（reservations, state.db） ────────────────────────────────────────
 
-@app.get("/api/reservations", tags=["reservations"], summary="予約一覧")
+@app.get("/api/reservations", tags=["reservations"], summary="予約一覧", response_model=S.ReservationsOut)
 def list_reservations_api():
     return {"reservations": radiko_state.list_reservations(status="scheduled")}
 
 
-@app.delete("/api/reservations/{res_id}", tags=["reservations"], summary="予約を取消")
+@app.delete("/api/reservations/{res_id}", tags=["reservations"], summary="予約を取消", response_model=S.CancelReservationOut)
 def cancel_reservation_api(res_id: int):
     r = radiko_state.get_reservation(res_id)
     if not r:
@@ -806,12 +807,12 @@ class RuleUpdate(BaseModel):
     enabled: "bool | None" = None
 
 
-@app.get("/api/rules", tags=["rules"], summary="ルール一覧")
+@app.get("/api/rules", tags=["rules"], summary="ルール一覧", response_model=S.RulesOut)
 def list_rules_api():
     return {"rules": radiko_state.list_rules()}
 
 
-@app.post("/api/rules", tags=["rules"], summary="ルールを作成し即時リコンサイル")
+@app.post("/api/rules", tags=["rules"], summary="ルールを作成し即時リコンサイル", response_model=S.RuleCreateOut)
 async def create_rule_api(req: RuleCreate):
     rule_id = radiko_state.create_rule(**req.model_dump())
     await _run_maintenance(refresh=False)  # 新ルールを即反映（番組表更新は省略）
@@ -819,7 +820,7 @@ async def create_rule_api(req: RuleCreate):
     return {"id": rule_id, "rule": radiko_state.get_rule(rule_id)}
 
 
-@app.get("/api/rules/{rule_id}", tags=["rules"], summary="ルール詳細")
+@app.get("/api/rules/{rule_id}", tags=["rules"], summary="ルール詳細", response_model=S.RuleOut)
 def get_rule_api(rule_id: int):
     r = radiko_state.get_rule(rule_id)
     if not r:
@@ -827,7 +828,7 @@ def get_rule_api(rule_id: int):
     return r
 
 
-@app.patch("/api/rules/{rule_id}", tags=["rules"], summary="ルールを更新")
+@app.patch("/api/rules/{rule_id}", tags=["rules"], summary="ルールを更新", response_model=S.RuleOut)
 async def update_rule_api(rule_id: int, req: RuleUpdate):
     if not radiko_state.get_rule(rule_id):
         raise HTTPException(404, "Not found")
@@ -839,7 +840,7 @@ async def update_rule_api(rule_id: int, req: RuleUpdate):
     return radiko_state.get_rule(rule_id)
 
 
-@app.delete("/api/rules/{rule_id}", tags=["rules"], summary="ルールと、その由来の未来予約を削除")
+@app.delete("/api/rules/{rule_id}", tags=["rules"], summary="ルールと、その由来の未来予約を削除", response_model=S.DeleteRuleOut)
 def delete_rule_api(rule_id: int):
     if not radiko_state.get_rule(rule_id):
         raise HTTPException(404, "Not found")
@@ -851,7 +852,7 @@ def delete_rule_api(rule_id: int):
     return {"status": "deleted", "rule_id": rule_id}
 
 
-@app.post("/api/rules/{rule_id}/reconcile", tags=["rules"], summary="このルールを今すぐ再同期")
+@app.post("/api/rules/{rule_id}/reconcile", tags=["rules"], summary="このルールを今すぐ再同期", response_model=S.MaintenanceOut)
 async def reconcile_rule_api(rule_id: int):
     if not radiko_state.get_rule(rule_id):
         raise HTTPException(404, "Not found")
@@ -889,7 +890,7 @@ async def _maintenance_loop():
             pass
 
 
-@app.post("/api/maintenance/run", tags=["maintenance"],
+@app.post("/api/maintenance/run", tags=["maintenance"], response_model=S.MaintenanceOut,
           summary="番組表更新＋予約同期＋ルール再同期を今すぐ実行")
 async def run_maintenance_api():
     result = await _run_maintenance(refresh=True)
