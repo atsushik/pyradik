@@ -26,6 +26,7 @@ import radiko_config
 import radiko_state
 import radiko_recording
 import radiko_scheduler
+import radiko_mcp
 
 # 設定は radiko_config に一元化（環境変数で上書き可）
 DB_PATH = radiko_config.DB_PATH
@@ -51,17 +52,23 @@ async def lifespan(app: FastAPI):
     print(
         "\n"
         f"  ▶ radiko Web UI を起動しました  →  http://localhost:{port}/\n"
+        f"  🔌 MCP エンドポイント         →  http://localhost:{port}/mcp\n"
         "  ■ 終了するには Ctrl-C を押してください\n",
         flush=True,
     )
 
-    yield
+    # MCP の StreamableHTTP セッションマネージャを起動（/mcp マウントに必要）
+    async with radiko_mcp.mcp.session_manager.run():
+        yield
     task.cancel()
     maint.cancel()
 
 
 app = FastAPI(title="Radiko Web UI", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
+# MCP（AIエージェント向け）を /mcp にマウント。streamable_http_app() 呼び出しで
+# session_manager が生成され、起動は lifespan 内の session_manager.run() が担う。
+app.mount("/mcp", radiko_mcp.mcp.streamable_http_app())
 
 
 def get_db():
@@ -482,7 +489,7 @@ def playback_play(req: PlaybackPlay):
     sid = cands[0]["station_id"]
     subprocess.run(["pkill", "ffplay"], check=False)
     subprocess.Popen(
-        ["python", str(RECORDER_PATH), "play", sid, "--live"],
+        [sys.executable, str(RECORDER_PATH), "play", sid, "--live"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
     )
     trigger_refresh()

@@ -9,6 +9,7 @@
 import re
 import sqlite3
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -148,7 +149,7 @@ def choose_method(t: Target, now=None) -> str:
 
 def create_at_job(reservation_id, fire_dt) -> Optional[str]:
     """fire_dt に jobrunner --reservation を実行する at ジョブを作り、ジョブ番号を返す。"""
-    cmd = f"python {radiko_config.JOBRUNNER_PATH} --reservation {reservation_id}"
+    cmd = f"{sys.executable} {radiko_config.JOBRUNNER_PATH} --reservation {reservation_id}"
     r = subprocess.run(
         ["at", fire_dt.strftime("%H:%M"), fire_dt.strftime("%Y-%m-%d")],
         input=cmd + "\n", text=True, capture_output=True,
@@ -175,7 +176,7 @@ def start_recording_now(t: Target) -> str:
         prog_id=t.prog_id, title=t.title, with_art=t.with_art,
     )
     subprocess.Popen(
-        ["python", radiko_config.JOBRUNNER_PATH, job_id],
+        [sys.executable, radiko_config.JOBRUNNER_PATH, job_id],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
     )
     return job_id

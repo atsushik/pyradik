@@ -33,31 +33,30 @@
 
 ### セットアップ
 ```
-# 共通
-sudo apt install ffmpeg
-
-# radiko_cli.py
-sudo apt install python3-rich python3-rich-click at
+# システム側（apt）: FFmpeg と予約録音用の at
+sudo apt install ffmpeg at
 sudo systemctl enable --now atd
 
-# web_ui/web_ui.py（Web UI）
-sudo apt install python3-fastapi python3-uvicorn
+# Python 依存は venv にまとめて入れる（rich / rich-click / fastapi / uvicorn / mcp）
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
 
 ### 初期設定
 ```
-python radiko_cli.py init-db --force   # DB初期化。省略しても update-programs が自動作成する
-python radiko_cli.py update-programs   # 番組表＋放送局を取得（放送局更新も同時に行う）
-python radiko_cli.py auto-enable       # 受信可能な放送局を enabled_stations.txt に書き出す
+.venv/bin/python radiko_cli.py init-db --force   # DB初期化。省略しても update-programs が自動作成する
+.venv/bin/python radiko_cli.py update-programs   # 番組表＋放送局を取得（放送局更新も同時に行う）
+.venv/bin/python radiko_cli.py auto-enable       # 受信可能な放送局を enabled_stations.txt に書き出す
 ```
 
-### WEB UIの起動
+### Web UI の起動
 ```
-python web_ui/web_ui.py
+.venv/bin/python web_ui/web_ui.py
 ```
 
-### ブラウザでアクセス
-- http://ホスト名:8470/
+### ブラウザ / エージェントからアクセス
+- Web UI: http://ホスト名:8470/
+- MCP（AIエージェント用エンドポイント）: http://ホスト名:8470/mcp
 
 ## 構成
 
@@ -67,8 +66,15 @@ python web_ui/web_ui.py
 | `radiko_recorder.py` | 録音・再生エンジン。radiko 認証〜HLS URL 取得を標準ライブラリのみで実装し、取得は ffmpeg / ffplay に委譲。CLI / Web UI 両方から利用される |
 | `radiko_programs.py` | radiko API から週間番組表を取得し DB スキーマ相当の dict を生成（urllib + ElementTree のみ） |
 | `radiko_audio.py` | 出力デバイス・音量の取得／設定（PipeWire の `wpctl` に委譲、Raspberry Pi OS 想定） |
-| `web_ui/web_ui.py` | FastAPI 製 REST API（ポート 8470） |
-| `web_ui/static/index.html` | シングルページ Web UI（番組表・検索・録音・再生・予約管理） |
+| `radiko_config.py` | 設定の一元管理（環境変数で上書き可：データ先・ポート・更新間隔など） |
+| `radiko_state.py` | `state.db`（予約・ルール・録音ジョブ）。番組表 DB とは別ファイルで永続化 |
+| `radiko_recording.py` | 録音指定の正規化（prog_id / 局＋時刻＋長さ）・方式判定・即時/予約の起動 |
+| `radiko_jobrunner.py` | 録音ジョブの実行本体（即時＝detached / 予約＝at から実行） |
+| `radiko_guide.py` | 番組表 DB 更新をライブラリ化（保守ループから利用） |
+| `radiko_scheduler.py` | 保守処理：番組表更新→予約の時刻同期→ルール再同期 |
+| `radiko_mcp.py` | MCP サーバ（AIエージェント向けツール群）。`/mcp` にマウント |
+| `web_ui/web_ui.py` | FastAPI 製 REST API（ポート 8470）＋ SSE＋ `/mcp` |
+| `web_ui/static/index.html` | シングルページ Web UI（番組表・検索・録音・再生・予約・ルール） |
 
 ### データの流れ
 
@@ -83,46 +89,27 @@ radiko API ──→ radiko_programs.py ──→ radiko_cli.py update-programs 
 
 ## 必要なもの
 
-### 共通
+### システム側（apt）
 
-- FFmpeg（3.x 以降、AAC / HLS サポート）— 録音・再生に使用
-- Python 3
-
-```
-sudo apt install ffmpeg
-```
-
-### radiko_cli.py
+- **FFmpeg**（3.x 以降、AAC / HLS サポート）— 録音・再生に使用
+- **at**（`schedule-record` などの予約録音に使用）
+- （音量操作を使う場合）**PipeWire / wpctl** — Raspberry Pi OS 標準
 
 ```
-sudo apt install python3-rich python3-rich-click
-```
-
-`schedule-record` などの予約録音には `at` も必要です。
-
-```
-sudo apt install at
+sudo apt install ffmpeg at
 sudo systemctl enable --now atd
 ```
 
-### web_ui/web_ui.py（Web UI）
+### Python 依存（venv）
 
-Raspberry Pi OS / Debian 系では apt で入れられます（依存の starlette / pydantic 等も一緒に入ります）。
-
-```
-sudo apt install python3-fastapi python3-uvicorn
-```
-
-### apt が使えない環境の場合
-
-Python パッケージ（rich / rich-click / fastapi / uvicorn）は `requirements.txt` にまとめてあります。仮想環境を作って一括で入れてください。
+Python パッケージ（`rich` / `rich-click` / `fastapi` / `uvicorn` / `mcp`）は `requirements.txt` にまとめています。仮想環境を作って入れてください。
 
 ```
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
 
-※ FFmpeg と `at` はシステム側のパッケージのため、これとは別に導入が必要です（`sudo apt install ffmpeg at`）。
+以降、CLI も Web UI も venv の Python で実行します（`.venv/bin/python …`）。MCP（`/mcp`）を含むため、システムの Python ではなく venv での起動が必要です。
 
 
 ## 使い方（radiko_cli.py）
@@ -132,19 +119,19 @@ pip install -r requirements.txt
 番組表を取得して DB に格納します。
 
 ```
-$ python radiko_cli.py update-programs   # 番組表＋放送局を更新
-$ python radiko_cli.py auto-enable       # 受信可能な放送局を enabled_stations.txt に書き出す
+$ .venv/bin/python radiko_cli.py update-programs   # 番組表＋放送局を更新
+$ .venv/bin/python radiko_cli.py auto-enable       # 受信可能な放送局を enabled_stations.txt に書き出す
 ```
 
 ### よく使うコマンド
 
 ```
-$ python radiko_cli.py search 秀島史香             # 番組名・パーソナリティ・説明文から検索
-$ python radiko_cli.py show-now                   # 現在放送中の番組を表示（受信可能局のみ）
-$ python radiko_cli.py show-program 13392705      # 番組 ID で詳細表示
-$ python radiko_cli.py record 13392705 --with-art # 録音（方法は自動判定、カバーアート埋め込み）
-$ python radiko_cli.py play YFM                   # ライブ再生（バックグラウンド）
-$ python radiko_cli.py stop                       # 再生停止
+$ .venv/bin/python radiko_cli.py search 秀島史香             # 番組名・パーソナリティ・説明文から検索
+$ .venv/bin/python radiko_cli.py show-now                   # 現在放送中の番組を表示（受信可能局のみ）
+$ .venv/bin/python radiko_cli.py show-program 13392705      # 番組 ID で詳細表示
+$ .venv/bin/python radiko_cli.py record 13392705 --with-art # 録音（方法は自動判定、カバーアート埋め込み）
+$ .venv/bin/python radiko_cli.py play YFM                   # ライブ再生（バックグラウンド）
+$ .venv/bin/python radiko_cli.py stop                       # 再生停止
 ```
 
 ### コマンド一覧
@@ -176,7 +163,7 @@ $ python radiko_cli.py stop                       # 再生停止
 ## Web UI
 
 ```
-$ python web_ui/web_ui.py
+$ .venv/bin/python web_ui/web_ui.py
 # → http://localhost:8470
 ```
 
@@ -185,9 +172,28 @@ $ python web_ui/web_ui.py
 - **番組表**: タイムテーブル形式で表示、放送局クリックでライブ再生、番組クリックで録音・再生
 - **検索**: キーワード検索。聴取可能な放送局のみ／全局、放送状態（放送済・放送中・未放送）の絞り込みに対応
 - **録音ファイル**: 一覧・ダウンロード・削除、録音中の状態表示
-- **録音予約一覧**: `at` 予約の確認・取り消し
+- **録音予約**: 予約の確認・取り消し（番組クリックで予約したものは放送時刻の変更に自動追従）
+- **ルール**: タイトルキーワードでシリーズ録画ルールを作成。一致する今後の放送回が自動予約される
 
-再生・録音・予約の状態は Server-Sent Events で配信され、複数ブラウザ間でリアルタイムに同期されます。事前に `radiko_cli.py update-programs` で番組表を取得しておく必要があります。
+再生・録音・予約・ルールの状態は Server-Sent Events で配信され、複数ブラウザ間でリアルタイムに同期されます。事前に `.venv/bin/python radiko_cli.py update-programs` で番組表を取得しておく必要があります。
+
+
+## REST API / MCP（連携用）
+
+Web UI と同じプロセスで、外部連携向けの API を公開しています。
+
+- **REST API**: `/api/...`（`/docs` に OpenAPI、`/api/status` に再生・録音・予約の統合状態）。録音は `POST /api/recordings`（過去→タイムフリー / 放送中→即時 / 未来→予約 を自動判定）、シリーズ録画は `/api/rules`。
+- **MCP**（AIエージェント向け）: `http://ホスト名:8470/mcp`（Streamable HTTP）。`list_stations` / `play` / `record` / `search_programs` / `create_rule` などのツールを公開。Claude などの MCP クライアントに次のように登録します。
+
+```json
+{
+  "mcpServers": {
+    "pyradik": { "url": "http://ホスト名:8470/mcp" }
+  }
+}
+```
+
+> 認証は未実装です。LAN 外へ公開する場合はリバースプロキシ等での保護を前提にしてください。
 
 
 ## 注意点
