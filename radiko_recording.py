@@ -36,6 +36,37 @@ def lookup_program(prog_id):
         conn.close()
 
 
+_SEARCHABLE = ("title", "pfm", "info")
+
+
+def find_programs(query, match_fields="title", station_id=None, weekday=None,
+                  time_from=None, time_to=None, after=None):
+    """ルール条件に一致する番組を返す（after 指定時はその時刻より後の開始のみ）。"""
+    fields = [f.strip() for f in match_fields.split(",") if f.strip() in _SEARCHABLE] or ["title"]
+    like = f"%{query}%"
+    where = " OR ".join(f"{f} LIKE ?" for f in fields)
+    params = [like] * len(fields)
+    q = f"SELECT prog_id, station_id, date, weekday, ftime, duration, title FROM programs WHERE ({where})"
+    if station_id:
+        q += " AND station_id=?"; params.append(station_id)
+    if weekday:
+        wds = [w.strip() for w in weekday.split(",") if w.strip()]
+        q += " AND weekday IN (%s)" % ",".join("?" * len(wds)); params += wds
+    if time_from:
+        q += " AND ftime>=?"; params.append(time_from)
+    if time_to:
+        q += " AND ftime<=?"; params.append(time_to)
+    conn = _db()
+    try:
+        rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+    finally:
+        conn.close()
+    if after is not None:
+        rows = [r for r in rows
+                if datetime.strptime(f"{r['date']}{r['ftime']}", "%Y%m%d%H%M") > after]
+    return rows
+
+
 def lookup_art_source(station_id, date, ftime):
     """(url, title, image_url) を返す。アートワーク取得用。"""
     conn = _db()

@@ -43,8 +43,43 @@ def sync_reservations():
 
 
 def reconcile_rules():
-    """タイトルルールから今後の一致番組を予約として ensure / 不一致を削除（ステージ4で実装）。"""
-    return 0
+    """有効ルールごとに、今後の一致番組を予約として ensure し、不一致の未来予約を削除する。
+
+    予約の同一性は (rule_id, prog_id) で判定。新しい回は prog_id が増えるので追加、
+    時刻変更は sync_reservations 側が prog_id アンカーで追従する。
+    """
+    now = datetime.now()
+    created = pruned = 0
+    for rule in radiko_state.list_rules(enabled_only=True):
+        matches = radiko_recording.find_programs(
+            rule["query"], match_fields=rule["match_fields"], station_id=rule["station_id"],
+            weekday=rule["weekday"], time_from=rule["time_from"], time_to=rule["time_to"],
+            after=now,  # 未来の回のみ予約対象
+        )
+        match_progids = {m["prog_id"] for m in matches}
+
+        for m in matches:
+            if radiko_state.find_reservation(rule["id"], m["prog_id"]):
+                continue  # 既にこの回の予約あり
+            t = radiko_recording.resolve_target({
+                "prog_id": m["prog_id"], "with_art": bool(rule["with_art"]),
+                "start_offset_sec": rule["start_offset_sec"],
+                "end_offset_sec": rule["end_offset_sec"],
+            })
+            try:
+                radiko_recording.schedule_reservation(t, rule_id=rule["id"])
+                created += 1
+            except Exception:
+                pass
+
+        # このルール由来の未来予約で、もう一致しないものを削除
+        for r in radiko_state.list_reservations(status="scheduled", rule_id=rule["id"]):
+            if datetime.fromisoformat(r["start_at"]) > now and r["prog_id"] not in match_progids:
+                radiko_recording.cancel_at_job(r["at_job_id"])
+                radiko_state.delete_reservation(r["id"])
+                pruned += 1
+
+    return {"created": created, "pruned": pruned}
 
 
 def run_maintenance(refresh=True):

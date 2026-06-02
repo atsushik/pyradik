@@ -660,6 +660,88 @@ def cancel_reservation_api(res_id: int):
     return {"status": "cancelled", "reservation_id": res_id}
 
 
+# ── ルール（タイトル定期＝シリーズ録画） ──────────────────────────────────
+
+class RuleCreate(BaseModel):
+    query: str
+    match_fields: str = "title"
+    station_id: "str | None" = None
+    weekday: "str | None" = None       # csv: Mon,Tue...
+    time_from: "str | None" = None     # HHMM
+    time_to: "str | None" = None       # HHMM
+    with_art: bool = False
+    start_offset_sec: int = 0
+    end_offset_sec: int = 0
+    enabled: bool = True
+
+
+class RuleUpdate(BaseModel):
+    query: "str | None" = None
+    match_fields: "str | None" = None
+    station_id: "str | None" = None
+    weekday: "str | None" = None
+    time_from: "str | None" = None
+    time_to: "str | None" = None
+    with_art: "bool | None" = None
+    start_offset_sec: "int | None" = None
+    end_offset_sec: "int | None" = None
+    enabled: "bool | None" = None
+
+
+@app.get("/api/rules", tags=["rules"], summary="ルール一覧")
+def list_rules_api():
+    return {"rules": radiko_state.list_rules()}
+
+
+@app.post("/api/rules", tags=["rules"], summary="ルールを作成し即時リコンサイル")
+async def create_rule_api(req: RuleCreate):
+    rule_id = radiko_state.create_rule(**req.model_dump())
+    await _run_maintenance(refresh=False)  # 新ルールを即反映（番組表更新は省略）
+    trigger_refresh()
+    return {"id": rule_id, "rule": radiko_state.get_rule(rule_id)}
+
+
+@app.get("/api/rules/{rule_id}", tags=["rules"], summary="ルール詳細")
+def get_rule_api(rule_id: int):
+    r = radiko_state.get_rule(rule_id)
+    if not r:
+        raise HTTPException(404, "Not found")
+    return r
+
+
+@app.patch("/api/rules/{rule_id}", tags=["rules"], summary="ルールを更新")
+async def update_rule_api(rule_id: int, req: RuleUpdate):
+    if not radiko_state.get_rule(rule_id):
+        raise HTTPException(404, "Not found")
+    fields = req.model_dump(exclude_unset=True)
+    if fields:
+        radiko_state.update_rule(rule_id, **fields)
+    await _run_maintenance(refresh=False)
+    trigger_refresh()
+    return radiko_state.get_rule(rule_id)
+
+
+@app.delete("/api/rules/{rule_id}", tags=["rules"], summary="ルールと、その由来の未来予約を削除")
+def delete_rule_api(rule_id: int):
+    if not radiko_state.get_rule(rule_id):
+        raise HTTPException(404, "Not found")
+    for r in radiko_state.list_reservations(status="scheduled", rule_id=rule_id):
+        radiko_recording.cancel_at_job(r["at_job_id"])
+        radiko_state.delete_reservation(r["id"])
+    radiko_state.delete_rule(rule_id)
+    trigger_refresh()
+    return {"status": "deleted", "rule_id": rule_id}
+
+
+@app.post("/api/rules/{rule_id}/reconcile", tags=["rules"], summary="このルールを今すぐ再同期")
+async def reconcile_rule_api(rule_id: int):
+    if not radiko_state.get_rule(rule_id):
+        raise HTTPException(404, "Not found")
+    result = await _run_maintenance(refresh=False)
+    trigger_refresh()
+    return result
+
+
 # ── 保守（番組表更新＋予約同期＋ルールリコンサイル） ──────────────────────
 
 async def _run_maintenance(refresh: bool):
