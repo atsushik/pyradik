@@ -56,8 +56,8 @@ def _resolve_stations(token):
 # ---- 発見・再生 ---------------------------------------------------------
 
 @mcp.tool()
-def list_stations(include_all: bool = False) -> list:
-    """聴取可能な放送局の一覧を返す。include_all=True で radiko 全局。"""
+def list_stations(include_all: bool = False) -> dict:
+    """聴取可能な放送局の一覧を {"stations": [...]} で返す。include_all=True で radiko 全局。"""
     conn = _db()
     en = _enabled()
     try:
@@ -71,7 +71,7 @@ def list_stations(include_all: bool = False) -> list:
             rows = conn.execute(
                 "SELECT station_id, name FROM stations WHERE service='radiko' ORDER BY station_id"
             ).fetchall()
-        return [dict(r) for r in rows]
+        return {"stations": [dict(r) for r in rows]}
     finally:
         conn.close()
 
@@ -134,8 +134,8 @@ def set_volume(level: float) -> dict:
 
 
 @mcp.tool()
-def search_programs(query: str, limit: int = 30) -> list:
-    """番組名・パーソナリティ・番組情報からキーワード検索する（最大 limit 件）。"""
+def search_programs(query: str, limit: int = 30) -> dict:
+    """番組名・パーソナリティ・番組情報からキーワード検索し {"programs": [...]} で返す（最大 limit 件）。"""
     like = f"%{query}%"
     conn = _db()
     try:
@@ -145,14 +145,14 @@ def search_programs(query: str, limit: int = 30) -> list:
                ORDER BY date DESC, ftime LIMIT ?""",
             (like, like, like, limit),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return {"programs": [dict(r) for r in rows]}
     finally:
         conn.close()
 
 
 @mcp.tool()
-def programs_now() -> list:
-    """受信可能な放送局で現在放送中の番組を返す。"""
+def programs_now() -> dict:
+    """受信可能な放送局で現在放送中の番組を {"programs": [...]} で返す。"""
     from datetime import datetime
     now = datetime.now()
     mins = now.hour * 60 + now.minute
@@ -172,7 +172,7 @@ def programs_now() -> list:
         start = int(r["ftime"][:2]) * 60 + int(r["ftime"][2:])
         if start <= mins < start + r["duration"]:
             out.append(dict(r))
-    return out
+    return {"programs": out}
 
 
 # ---- 録音・予約・ジョブ -------------------------------------------------
@@ -201,15 +201,15 @@ def record(prog_id: "str | None" = None, station_id: "str | None" = None,
 
 
 @mcp.tool()
-def list_jobs() -> list:
-    """録音ジョブ（実行中・完了）の一覧を返す。"""
-    return radiko_state.list_jobs()
+def list_jobs() -> dict:
+    """録音ジョブ（実行中・完了）の一覧を {"jobs": [...]} で返す。"""
+    return {"jobs": radiko_state.list_jobs()}
 
 
 @mcp.tool()
-def list_reservations() -> list:
-    """予約（未来の録音）の一覧を返す。"""
-    return radiko_state.list_reservations(status="scheduled")
+def list_reservations() -> dict:
+    """予約（未来の録音）の一覧を {"reservations": [...]} で返す。"""
+    return {"reservations": radiko_state.list_reservations(status="scheduled")}
 
 
 @mcp.tool()
@@ -235,9 +235,9 @@ def create_rule(query: str, station_id: "str | None" = None, with_art: bool = Fa
 
 
 @mcp.tool()
-def list_rules() -> list:
-    """シリーズ録画ルールの一覧を返す。"""
-    return radiko_state.list_rules()
+def list_rules() -> dict:
+    """シリーズ録画ルールの一覧を {"rules": [...]} で返す。"""
+    return {"rules": radiko_state.list_rules()}
 
 
 @mcp.tool()
