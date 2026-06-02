@@ -29,6 +29,35 @@
 - 番組名・パーソナリティ・番組情報からキーワード検索できます
 - 聴取可能な放送局のみ／全局、放送状態（放送済・放送中・未放送）で絞り込めます
 
+## Raspberry PIでの簡単な使い方
+
+### セットアップ
+```
+# 共通
+sudo apt install ffmpeg
+
+# radiko_cli.py
+sudo apt install python3-rich python3-rich-click at
+sudo systemctl enable --now atd
+
+# web_ui/web_ui.py（Web UI）
+sudo apt install python3-fastapi python3-uvicorn
+```
+
+### 初期設定
+```
+python radiko_cli.py init-db --force   # DB初期化。省略しても update-programs が自動作成する
+python radiko_cli.py update-programs   # 番組表＋放送局を取得（放送局更新も同時に行う）
+python radiko_cli.py auto-enable       # 受信可能な放送局を enabled_stations.txt に書き出す
+```
+
+### WEB UIの起動
+```
+python web_ui/web_ui.py
+```
+
+### ブラウザでアクセス
+- http://ホスト名:8470/
 
 ## 構成
 
