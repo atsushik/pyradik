@@ -83,9 +83,17 @@ sudo systemctl enable --now atd
 
 ### web_ui/web_ui.py（Web UI）
 
+Raspberry Pi OS / Debian 系では apt で入れられます（依存の starlette / pydantic 等も一緒に入ります）。
+
 ```
+sudo apt install python3-fastapi python3-uvicorn
+```
+
+apt が使えない環境では仮想環境を作って pip で入れてください。
+
+```
+python3 -m venv .venv && . .venv/bin/activate
 pip install fastapi uvicorn
-# 環境によっては: pip install --break-system-packages fastapi uvicorn
 ```
 
 
@@ -173,8 +181,6 @@ $ python web_ui/web_ui.py
 
 
 ## 技術情報（実装メモ）
-
-過去の調査で得た、radiko API・データ仕様に関する知見をまとめます。
 
 ### タイムフリー再生・録音には `start_at` / `end_at` が必須
 
