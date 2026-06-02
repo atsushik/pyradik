@@ -420,6 +420,117 @@ def set_volume(req: VolumeRequest):
     return {"status": "ok", "volume": radiko_audio.get_volume()}
 
 
+# ── 放送局の名前解決・再生（playback）・発見・統合ステータス ──────────────
+
+def _resolve_stations(token):
+    """token を放送局へ解決：id一致 → 名前完全一致 → 部分一致。候補リストを返す。"""
+    conn = get_db()
+    try:
+        r = conn.execute("SELECT station_id, name FROM stations WHERE station_id=?", (token,)).fetchone()
+        if r:
+            return [dict(r)]
+        rows = conn.execute("SELECT station_id, name FROM stations WHERE name=? ORDER BY station_id", (token,)).fetchall()
+        if not rows:
+            like = f"%{token}%"
+            rows = conn.execute(
+                "SELECT station_id, name FROM stations WHERE name LIKE ? OR station_id LIKE ? ORDER BY station_id",
+                (like, like),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def _current_programs(station_filter=None):
+    """現在放送中の番組（date=今日 かつ 開始<=現在<終了）を返す。"""
+    now = datetime.now()
+    mins = now.hour * 60 + now.minute
+    conn = get_db()
+    q = """SELECT p.prog_id, p.station_id, COALESCE(s.name, p.station_id) name,
+                  p.ftime, p.duration, p.title, p.pfm, p.url, p.image_url
+           FROM programs p LEFT JOIN stations s ON p.station_id=s.station_id
+           WHERE p.date=?"""
+    params = [now.strftime("%Y%m%d")]
+    if station_filter:
+        ph = ",".join("?" * len(station_filter))
+        q += f" AND p.station_id IN ({ph})"; params += list(station_filter)
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        start = int(r["ftime"][:2]) * 60 + int(r["ftime"][2:])
+        if start <= mins < start + r["duration"]:
+            out.append({k: r[k] for k in r.keys()})
+    return out
+
+
+class PlaybackPlay(BaseModel):
+    station_id: "str | None" = None
+    station_name: "str | None" = None
+
+
+@app.post("/api/playback/play", tags=["playback"], summary="再生（station_id または station_name で指定）")
+def playback_play(req: PlaybackPlay):
+    token = req.station_id or req.station_name
+    if not token:
+        raise HTTPException(400, "station_id か station_name が必要です")
+    cands = _resolve_stations(token)
+    if not cands:
+        raise HTTPException(404, f"放送局が見つかりません: {token}")
+    if len(cands) > 1:
+        raise HTTPException(409, {"message": "候補が複数あります", "candidates": cands})
+    sid = cands[0]["station_id"]
+    subprocess.run(["pkill", "ffplay"], check=False)
+    subprocess.Popen(
+        ["python", str(RECORDER_PATH), "play", sid, "--live"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
+    trigger_refresh()
+    return {"status": "playing", "station_id": sid, "station_name": cands[0]["name"]}
+
+
+@app.post("/api/playback/stop", tags=["playback"], summary="再生停止")
+def playback_stop():
+    r = subprocess.run(["pkill", "ffplay"], capture_output=True)
+    trigger_refresh()
+    return {"status": "stopped" if r.returncode == 0 else "not_playing"}
+
+
+@app.get("/api/playback", tags=["playback"], summary="再生の現在状態（局・番組・音量）")
+def playback_state():
+    np = _now_playing_data()
+    if np.get("playing") and np.get("station_id"):
+        cur = _current_programs([np["station_id"]])
+        np["program"] = cur[0] if cur else None
+        np["station_name"] = cur[0]["name"] if cur else np["station_id"]
+    return np
+
+
+@app.get("/api/now", tags=["discovery"], summary="現在放送中（受信可能局）")
+def now_api():
+    enabled = load_enabled()
+    return {"programs": _current_programs(list(enabled) if enabled else None)}
+
+
+@app.get("/api/stations/{station_id}/now", tags=["discovery"], summary="その局の現在番組")
+def station_now_api(station_id: str):
+    cur = _current_programs([station_id])
+    return cur[0] if cur else {"station_id": station_id, "program": None}
+
+
+@app.get("/api/status", tags=["meta"], summary="再生・録音・予約の統合ステータス")
+def status_api():
+    active = [j for j in radiko_state.list_jobs() if j["status"] == "recording"]
+    reservations = radiko_state.list_reservations(status="scheduled")
+    nxt = min(reservations, key=lambda r: r["start_at"]) if reservations else None
+    return {
+        "playback": _now_playing_data(),
+        "recording": {"active": len(active), "job_ids": [j["id"] for j in active]},
+        "reservations": {"count": len(reservations), "next": nxt},
+        "version": radiko_config.VERSION,
+    }
+
+
 def _schedules_data():
     """at ジョブ一覧を返す。at コマンドが無い場合は None。"""
     try:
