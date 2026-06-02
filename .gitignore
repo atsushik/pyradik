@@ -4,6 +4,9 @@ __pycache__/
 
 # 生成される番組DB・データ
 radiko.db
+state.db
+state.db-wal
+state.db-shm
 stations.csv
 enabled_stations.txt
 
