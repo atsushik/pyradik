@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -17,21 +18,27 @@ from pydantic import BaseModel
 
 APP_DIR = Path(__file__).parent
 PROJECT_DIR = APP_DIR.parent
-DB_PATH = PROJECT_DIR / "radiko.db"
-ENABLED_STATIONS_PATH = PROJECT_DIR / "enabled_stations.txt"
-CLI_PATH = PROJECT_DIR / "radiko_cli.py"
-RECORDER_PATH = PROJECT_DIR / "radiko_recorder.py"
-RECORDINGS_DIR = PROJECT_DIR
 
 sys.path.insert(0, str(PROJECT_DIR))
 import radiko_recorder
 import radiko_audio
+import radiko_config
+import radiko_state
+import radiko_recording
+
+# 設定は radiko_config に一元化（環境変数で上書き可）
+DB_PATH = radiko_config.DB_PATH
+ENABLED_STATIONS_PATH = radiko_config.ENABLED_STATIONS_PATH
+CLI_PATH = radiko_config.CLI_PATH
+RECORDER_PATH = radiko_config.RECORDER_PATH
+RECORDINGS_DIR = Path(radiko_config.RECORDINGS_DIR)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 起動時に状態 poll ループを開始し、全 SSE クライアントへ変化を配信する
     global _loop, _wake
+    radiko_state.init()  # state.db（予約・ルール・ジョブ）を用意
     _loop = asyncio.get_running_loop()
     _wake = asyncio.Event()
     task = asyncio.create_task(_broadcast_loop())
@@ -72,6 +79,31 @@ def root():
         APP_DIR / "static" / "index.html",
         headers={"Cache-Control": "no-cache"},
     )
+
+
+@app.get("/api/version", tags=["meta"], summary="バージョン情報")
+def version():
+    return {"version": radiko_config.VERSION}
+
+
+@app.get("/api/health", tags=["meta"], summary="ヘルスチェック")
+def health():
+    checks = {}
+    try:
+        c = get_db(); c.execute("SELECT 1").fetchone(); c.close(); checks["db"] = True
+    except Exception:
+        checks["db"] = False
+    checks["ffmpeg"] = shutil.which("ffmpeg") is not None
+    try:
+        subprocess.run(["atq"], capture_output=True, check=True); checks["at"] = True
+    except Exception:
+        checks["at"] = False
+    guide_age = None
+    if DB_PATH.exists():
+        guide_age = int(time.time() - DB_PATH.stat().st_mtime)
+    checks["guide_age_sec"] = guide_age
+    ok = checks["db"] and checks["ffmpeg"]
+    return {"status": "ok" if ok else "degraded", "version": radiko_config.VERSION, "checks": checks}
 
 
 @app.get("/api/dates")
@@ -518,6 +550,93 @@ def download_recording(filename: str):
     return FileResponse(str(path), media_type="audio/x-m4a", filename=filename)
 
 
+# ── 録音の統一入口（正規化ターゲット → 即時ジョブ / 予約） ──────────────
+
+class RecordingCreate(BaseModel):
+    prog_id: "str | None" = None
+    station_id: "str | None" = None
+    start_at: "str | None" = None       # ISO8601（JST）
+    duration_min: "int | None" = None
+    title: "str | None" = None
+    with_art: bool = False
+    start_offset_sec: int = 0
+    end_offset_sec: int = 0
+    output: "str | None" = None
+
+
+def _target_view(t):
+    return {
+        "station_id": t.station_id,
+        "start_at": t.start_at.isoformat(),
+        "duration_min": t.duration_min,
+        "prog_id": t.prog_id,
+        "title": t.title,
+    }
+
+
+@app.post("/api/recordings", tags=["recordings"],
+          summary="録音を作成（過去/放送中は即時、未来は予約に自動振り分け）")
+def create_recording(req: RecordingCreate):
+    try:
+        target = radiko_recording.resolve_target(req.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    method = radiko_recording.choose_method(target)
+    if method == "future":
+        try:
+            info = radiko_recording.schedule_reservation(target)
+        except Exception as e:
+            raise HTTPException(500, str(e))
+        trigger_refresh()
+        return {"kind": "reservation", "method": "scheduled", "status": "scheduled",
+                "target": _target_view(target), "output": target.output, **info}
+    job_id = radiko_recording.start_recording_now(target)
+    trigger_refresh()
+    return {"kind": "job", "method": method, "status": "recording", "job_id": job_id,
+            "target": _target_view(target), "output": target.output}
+
+
+def _job_view(j):
+    out = dict(j)
+    out["with_art"] = bool(j["with_art"])
+    if j["status"] == "recording" and j["started_at"]:
+        total = j["duration_min"] * 60
+        elapsed = (datetime.now() - datetime.fromisoformat(j["started_at"])).total_seconds()
+        out["progress"] = {
+            "elapsed_sec": int(elapsed), "total_sec": total,
+            "percent": min(100, round(elapsed / total * 100)) if total else None,
+        }
+    p = Path(j["output"])
+    out["size"] = p.stat().st_size if p.exists() else 0
+    return out
+
+
+@app.get("/api/jobs", tags=["jobs"], summary="録音ジョブ一覧（進捗つき）")
+def list_jobs_api():
+    return {"jobs": [_job_view(j) for j in radiko_state.list_jobs()]}
+
+
+@app.get("/api/jobs/{job_id}", tags=["jobs"], summary="録音ジョブの詳細・進捗")
+def get_job_api(job_id: str):
+    j = radiko_state.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Not found")
+    return _job_view(j)
+
+
+@app.delete("/api/jobs/{job_id}", tags=["jobs"], summary="実行中の録音を停止")
+def stop_job_api(job_id: str):
+    j = radiko_state.get_job(job_id)
+    if not j:
+        raise HTTPException(404, "Not found")
+    if j["status"] == "recording":
+        subprocess.run(["pkill", "-f", j["output"]], capture_output=True)
+        radiko_state.set_job_status(job_id, "failed", "stopped by user")
+    trigger_refresh()
+    return {"status": "stopped", "job_id": job_id}
+
+
 # ── SSE: サーバ側の共有状態（再生・録音・予約）を全クライアントへ push ──
 #
 # 状態の実体は OS 側（ffplay/ffmpeg プロセス・ディスク上の *.m4a・at ジョブ）にあり、
@@ -600,7 +719,7 @@ async def events():
 
 if __name__ == "__main__":
     import uvicorn
-    config = uvicorn.Config(app, host="0.0.0.0", port=8470, timeout_graceful_shutdown=5)
+    config = uvicorn.Config(app, host=radiko_config.HOST, port=radiko_config.PORT, timeout_graceful_shutdown=5)
     _server = uvicorn.Server(config)
     try:
         # シャットダウン完了後に asyncio.run が再送出する KeyboardInterrupt を
