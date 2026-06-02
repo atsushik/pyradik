@@ -25,6 +25,7 @@ import radiko_audio
 import radiko_config
 import radiko_state
 import radiko_recording
+import radiko_scheduler
 
 # 設定は radiko_config に一元化（環境変数で上書き可）
 DB_PATH = radiko_config.DB_PATH
@@ -36,12 +37,15 @@ RECORDINGS_DIR = Path(radiko_config.RECORDINGS_DIR)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 起動時に状態 poll ループを開始し、全 SSE クライアントへ変化を配信する
-    global _loop, _wake
+    # 起動時に状態 poll ループ＋保守ループを開始する
+    global _loop, _wake, _maint_wake, _maint_lock
     radiko_state.init()  # state.db（予約・ルール・ジョブ）を用意
     _loop = asyncio.get_running_loop()
     _wake = asyncio.Event()
+    _maint_wake = asyncio.Event()
+    _maint_lock = asyncio.Lock()
     task = asyncio.create_task(_broadcast_loop())
+    maint = asyncio.create_task(_maintenance_loop())
 
     port = _server.config.port if _server else 8470
     print(
@@ -53,6 +57,7 @@ async def lifespan(app: FastAPI):
 
     yield
     task.cancel()
+    maint.cancel()
 
 
 app = FastAPI(title="Radiko Web UI", lifespan=lifespan)
@@ -637,6 +642,61 @@ def stop_job_api(job_id: str):
     return {"status": "stopped", "job_id": job_id}
 
 
+# ── 予約（reservations, state.db） ────────────────────────────────────────
+
+@app.get("/api/reservations", tags=["reservations"], summary="予約一覧")
+def list_reservations_api():
+    return {"reservations": radiko_state.list_reservations(status="scheduled")}
+
+
+@app.delete("/api/reservations/{res_id}", tags=["reservations"], summary="予約を取消")
+def cancel_reservation_api(res_id: int):
+    r = radiko_state.get_reservation(res_id)
+    if not r:
+        raise HTTPException(404, "Not found")
+    radiko_recording.cancel_at_job(r["at_job_id"])
+    radiko_state.delete_reservation(res_id)
+    trigger_refresh()
+    return {"status": "cancelled", "reservation_id": res_id}
+
+
+# ── 保守（番組表更新＋予約同期＋ルールリコンサイル） ──────────────────────
+
+async def _run_maintenance(refresh: bool):
+    async with _maint_lock:
+        return await asyncio.to_thread(radiko_scheduler.run_maintenance, refresh)
+
+
+async def _maintenance_loop():
+    # 起動直後は番組表更新せず予約同期だけ（再起動のたびの重い取得を避ける）
+    try:
+        await _run_maintenance(refresh=False)
+    except Exception:
+        pass
+    while not (_server and _server.should_exit):
+        try:
+            await asyncio.wait_for(_maint_wake.wait(), timeout=radiko_config.GUIDE_REFRESH_SEC)
+        except asyncio.TimeoutError:
+            pass
+        else:
+            _maint_wake.clear()
+        if _server and _server.should_exit:
+            break
+        try:
+            await _run_maintenance(refresh=True)
+            trigger_refresh()
+        except Exception:
+            pass
+
+
+@app.post("/api/maintenance/run", tags=["maintenance"],
+          summary="番組表更新＋予約同期＋ルール再同期を今すぐ実行")
+async def run_maintenance_api():
+    result = await _run_maintenance(refresh=True)
+    trigger_refresh()
+    return result
+
+
 # ── SSE: サーバ側の共有状態（再生・録音・予約）を全クライアントへ push ──
 #
 # 状態の実体は OS 側（ffplay/ffmpeg プロセス・ディスク上の *.m4a・at ジョブ）にあり、
@@ -647,7 +707,9 @@ def stop_job_api(job_id: str):
 _subscribers: "set[asyncio.Queue]" = set()
 _loop: "asyncio.AbstractEventLoop | None" = None
 _wake: "asyncio.Event | None" = None
-_server = None  # uvicorn.Server。SSE ジェネレータが should_exit を見て抜けるために参照する
+_maint_wake: "asyncio.Event | None" = None
+_maint_lock: "asyncio.Lock | None" = None
+_server = None  # uvicorn.Server。SSE ジェネレータ／保守ループが should_exit を見て抜けるために参照する
 
 POLL_INTERVAL = 2.0       # 状態スナップショットの最大間隔（秒）
 KEEPALIVE_INTERVAL = 15.0  # SSE コメント行で接続維持する間隔（秒）

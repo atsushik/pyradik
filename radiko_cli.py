@@ -23,9 +23,10 @@ from rich.layout import Layout
 
 import radiko_recorder
 import radiko_programs
+import radiko_config
 
-DB_PATH = "radiko.db"
-ENABLED_STATIONS_PATH = "enabled_stations.txt"
+DB_PATH = str(radiko_config.DB_PATH)
+ENABLED_STATIONS_PATH = str(radiko_config.ENABLED_STATIONS_PATH)
 
 MAX_WORKERS = 3
 RECORDER_PATH = str(Path(__file__).parent / "radiko_recorder.py")
